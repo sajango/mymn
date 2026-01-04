@@ -313,11 +313,35 @@ class TradingBot:
             logger.warning(f"Unauthorized /positions from {update.effective_chat.id}")
             return
 
-        # Placeholder - will be implemented in Phase 5
-        await update.message.reply_text(
-            "*Active Positions*\n\n_Position tracking not yet implemented_",
-            parse_mode="Markdown",
-        )
+        # Import here to avoid circular imports
+        from src.database import get_database
+
+        db = get_database()
+        trades = db.get_open_trades()
+
+        if not trades:
+            await update.message.reply_text(
+                "*Active Positions*\n\n_No open positions_",
+                parse_mode="Markdown",
+            )
+            return
+
+        text = "*Active Positions*\n\n"
+        for t in trades:
+            emoji = "BUY" if t["action"] == "BUY" else "SELL"
+            profit_sign = "+" if t.get("profit", 0) >= 0 else ""
+            trail_state = t.get("trailing_state", "inactive")
+
+            text += (
+                f"*{t['symbol']}* {emoji}\n"
+                f"  Ticket: {t['ticket']}\n"
+                f"  Volume: {t['volume']}\n"
+                f"  Entry: {t['entry_price']:.2f}\n"
+                f"  SL: {t['stop_loss']:.2f}\n"
+                f"  Trailing: {trail_state}\n\n"
+            )
+
+        await update.message.reply_text(text, parse_mode="Markdown")
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline button callbacks."""

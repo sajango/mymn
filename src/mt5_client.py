@@ -323,5 +323,372 @@ class MT5Client:
         return exported
 
 
+    def get_account_info(self) -> Optional[dict]:
+        """Get account balance and margin info.
+
+        Returns:
+            Account info dict or None if unavailable
+        """
+        info = mt5.account_info()
+        if info is None:
+            logger.error(f"Failed to get account info: {mt5.last_error()}")
+            return None
+        return {
+            "balance": info.balance,
+            "equity": info.equity,
+            "margin": info.margin,
+            "free_margin": info.margin_free,
+            "currency": info.currency,
+            "leverage": info.leverage,
+        }
+
+    def calculate_position_size(
+        self,
+        symbol: str,
+        entry_price: float,
+        stop_loss: float,
+        risk_percent: Optional[float] = None,
+        confidence: int = 100,
+    ) -> float:
+        """Calculate lot size based on risk percentage and confidence.
+
+        Position sizing uses confidence-adjusted risk:
+        - confidence >= 75: full position (100% of risk_percent)
+        - confidence 60-74: half position (50% of risk_percent)
+        - confidence < 60: minimum position
+
+        Args:
+            symbol: Trading symbol
+            entry_price: Entry price
+            stop_loss: Stop loss price
+            risk_percent: Risk percentage (default from config)
+            confidence: Signal confidence 0-100
+
+        Returns:
+            Calculated lot size
+        """
+        risk_percent = risk_percent or self.config.risk_percent
+
+        # Confidence-based position sizing
+        if confidence >= self.config.confidence_full_position:
+            size_multiplier = 1.0
+        elif confidence >= self.config.confidence_half_position:
+            size_multiplier = 0.5
+        else:
+            size_multiplier = 0.25  # Minimum for low confidence
+
+        account = self.get_account_info()
+        if account is None:
+            logger.error("Cannot get account info for position sizing")
+            return 0.01  # Minimum fallback
+
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            logger.error(f"Symbol info unavailable: {symbol}")
+            return 0.01
+
+        # Calculate risk amount with confidence adjustment
+        risk_amount = account["balance"] * (risk_percent / 100) * size_multiplier
+        stop_distance = abs(entry_price - stop_loss)
+
+        if stop_distance == 0:
+            logger.error("Stop distance is zero")
+            return 0.01
+
+        # XAUUSD: 1 lot = 100 oz, pip value varies by price
+        # For gold, trade_contract_size is typically 100
+        pip_value = symbol_info.trade_contract_size * symbol_info.point
+        lot_size = risk_amount / (stop_distance / symbol_info.point * pip_value)
+
+        # Apply limits
+        lot_size = max(symbol_info.volume_min, lot_size)
+        lot_size = min(symbol_info.volume_max, lot_size)
+        lot_size = min(self.config.max_position_size, lot_size)
+
+        # Round to step
+        lot_size = round(lot_size / symbol_info.volume_step) * symbol_info.volume_step
+        lot_size = round(lot_size, 2)
+
+        logger.info(
+            f"Position size: {lot_size} lots "
+            f"(risk: {risk_percent}%, confidence: {confidence}%, "
+            f"multiplier: {size_multiplier}, amount: ${risk_amount:.2f})"
+        )
+        return lot_size
+
+    def place_market_order(
+        self,
+        symbol: str,
+        order_type: str,
+        volume: float,
+        stop_loss: float,
+        take_profit: float,
+        comment: str = "EW Auto",
+        magic: int = 123456,
+    ) -> Optional[int]:
+        """Place market order with SL/TP.
+
+        Args:
+            symbol: Trading symbol
+            order_type: "BUY" or "SELL"
+            volume: Lot size
+            stop_loss: Stop loss price
+            take_profit: Take profit price (TP1)
+            comment: Order comment
+            magic: Magic number for identification
+
+        Returns:
+            Order ticket or None on failure, -1 for paper trading
+        """
+        if self.config.paper_trading:
+            logger.info(
+                f"PAPER TRADE: {order_type} {volume} {symbol} "
+                f"SL:{stop_loss:.2f} TP:{take_profit:.2f}"
+            )
+            return -1  # Fake ticket for paper trading
+
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            logger.error(f"Failed to get tick: {mt5.last_error()}")
+            return None
+
+        mt5_type = mt5.ORDER_TYPE_BUY if order_type == "BUY" else mt5.ORDER_TYPE_SELL
+        price = tick.ask if order_type == "BUY" else tick.bid
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": volume,
+            "type": mt5_type,
+            "price": price,
+            "sl": stop_loss,
+            "tp": take_profit,
+            "deviation": self.config.max_slippage,
+            "magic": magic,
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        # Retry on requote
+        for attempt in range(3):
+            result = mt5.order_send(request)
+
+            if result is None:
+                logger.error(f"Order send returned None: {mt5.last_error()}")
+                return None
+
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                logger.info(f"Order placed: ticket={result.order}, price={result.price}")
+                return result.order
+
+            if result.retcode == mt5.TRADE_RETCODE_REQUOTE:
+                logger.warning(f"Requote attempt {attempt + 1}")
+                tick = mt5.symbol_info_tick(symbol)
+                if tick:
+                    request["price"] = tick.ask if order_type == "BUY" else tick.bid
+                continue
+
+            logger.error(f"Order failed: {result.retcode} - {result.comment}")
+            break
+
+        return None
+
+    def get_positions(self, magic: int = 123456) -> list[dict]:
+        """Get open positions by magic number.
+
+        Args:
+            magic: Magic number filter
+
+        Returns:
+            List of position dicts
+        """
+        positions = mt5.positions_get()
+        if positions is None:
+            return []
+
+        return [
+            {
+                "ticket": p.ticket,
+                "symbol": p.symbol,
+                "type": "BUY" if p.type == 0 else "SELL",
+                "volume": p.volume,
+                "open_price": p.price_open,
+                "current_price": p.price_current,
+                "sl": p.sl,
+                "tp": p.tp,
+                "profit": p.profit,
+                "magic": p.magic,
+                "time": p.time,
+            }
+            for p in positions
+            if p.magic == magic
+        ]
+
+    def get_position_by_ticket(self, ticket: int) -> Optional[dict]:
+        """Get single position by ticket.
+
+        Args:
+            ticket: Position ticket
+
+        Returns:
+            Position dict or None if not found
+        """
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            return None
+
+        p = positions[0]
+        return {
+            "ticket": p.ticket,
+            "symbol": p.symbol,
+            "type": "BUY" if p.type == 0 else "SELL",
+            "volume": p.volume,
+            "open_price": p.price_open,
+            "current_price": p.price_current,
+            "sl": p.sl,
+            "tp": p.tp,
+            "profit": p.profit,
+            "magic": p.magic,
+            "time": p.time,
+        }
+
+    def modify_position(
+        self,
+        ticket: int,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+    ) -> bool:
+        """Modify position SL/TP.
+
+        Args:
+            ticket: Position ticket
+            stop_loss: New stop loss (None keeps existing)
+            take_profit: New take profit (None keeps existing)
+
+        Returns:
+            True if successful
+        """
+        if self.config.paper_trading:
+            logger.info(f"PAPER: Modify position {ticket} SL:{stop_loss} TP:{take_profit}")
+            return True
+
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            logger.error(f"Position not found: {ticket}")
+            return False
+
+        pos = positions[0]
+
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": ticket,
+            "symbol": pos.symbol,
+            "sl": stop_loss if stop_loss else pos.sl,
+            "tp": take_profit if take_profit else pos.tp,
+        }
+
+        result = mt5.order_send(request)
+        if result is None:
+            logger.error(f"Modify returned None: {mt5.last_error()}")
+            return False
+
+        success = result.retcode == mt5.TRADE_RETCODE_DONE
+
+        if success:
+            logger.info(f"Position modified: {ticket} SL:{request['sl']} TP:{request['tp']}")
+        else:
+            logger.error(f"Modify failed: {result.retcode} - {result.comment}")
+
+        return success
+
+    def close_partial(self, ticket: int, volume: float) -> bool:
+        """Close partial position volume.
+
+        Args:
+            ticket: Position ticket
+            volume: Volume to close
+
+        Returns:
+            True if successful
+        """
+        if self.config.paper_trading:
+            logger.info(f"PAPER: Partial close {ticket} volume={volume}")
+            return True
+
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            logger.error(f"Position not found for partial close: {ticket}")
+            return False
+
+        pos = positions[0]
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is None:
+            logger.error(f"Failed to get tick for partial close: {mt5.last_error()}")
+            return False
+
+        close_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
+        price = tick.bid if pos.type == 0 else tick.ask
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "position": ticket,
+            "symbol": pos.symbol,
+            "volume": volume,
+            "type": close_type,
+            "price": price,
+            "deviation": self.config.max_slippage,
+            "magic": pos.magic,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        result = mt5.order_send(request)
+        if result is None:
+            logger.error(f"Partial close returned None: {mt5.last_error()}")
+            return False
+
+        success = result.retcode == mt5.TRADE_RETCODE_DONE
+
+        if success:
+            logger.info(f"Partial close: {ticket} volume={volume} price={result.price}")
+        else:
+            logger.error(f"Partial close failed: {result.retcode} - {result.comment}")
+
+        return success
+
+    def close_position(self, ticket: int) -> bool:
+        """Close entire position.
+
+        Args:
+            ticket: Position ticket
+
+        Returns:
+            True if successful
+        """
+        pos = self.get_position_by_ticket(ticket)
+        if pos is None:
+            logger.error(f"Position not found for close: {ticket}")
+            return False
+
+        return self.close_partial(ticket, pos["volume"])
+
+    def get_current_atr(self, symbol: str, period: int = 14) -> Optional[float]:
+        """Get current ATR value for symbol.
+
+        Args:
+            symbol: Trading symbol
+            period: ATR period
+
+        Returns:
+            ATR value or None
+        """
+        df = self.fetch_ohlcv(symbol, "H1", period * 2)
+        if df is None or len(df) < period:
+            return None
+
+        atr = self.calculate_atr(df["high"], df["low"], df["close"], period)
+        return atr.iloc[-1] if not atr.empty else None
+
+
 # Singleton instance
 mt5_client = MT5Client()

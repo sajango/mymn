@@ -2,7 +2,7 @@
 
 An automated trading system for MetaTrader 5 that uses Elliott Wave analysis to identify trading opportunities on gold (XAUUSD) with Telegram notifications and paper trading support.
 
-**Current Status**: Phase 3 Complete ✓ (Claude Integration)
+**Current Status**: Phase 5 Complete ✓ (Trade Execution)
 
 ## Quick Start
 
@@ -28,18 +28,32 @@ An automated trading system for MetaTrader 5 that uses Elliott Wave analysis to 
 
 ```
 src/
-  __init__.py          # Package initialization
-  config.py            # Settings management (Pydantic)
-  mt5_client.py        # MT5 client & indicator calculations
-  signal_parser.py     # Trading signal models & parsing
-  claude_client.py     # Claude CLI wrapper
+  __init__.py              # Package initialization
+  config.py               # Settings management (Pydantic)
+  mt5_client.py           # MT5 client & indicator calculations
+  signal_parser.py        # Trading signal models & parsing
+  claude_client.py        # Claude CLI wrapper
+  database.py             # SQLite trade persistence (NEW Phase 5)
+  trade_executor.py       # Signal execution coordinator (NEW Phase 5)
+  trailing_stop_manager.py # Trailing stop state machine (NEW Phase 5)
+  telegram_bot.py         # Telegram bot interface (Phase 4)
 
 tests/
-  __init__.py          # Test package initialization
-  test_config.py       # Configuration tests
-  test_mt5.py          # MT5 client & indicator tests
-  test_signal_parser.py # Signal parsing & validation tests
-  test_claude_client.py # Claude client & CLI integration tests
+  __init__.py             # Test package initialization
+  test_config.py          # Configuration tests
+  test_mt5.py             # MT5 client & indicator tests
+  test_signal_parser.py   # Signal parsing & validation tests
+  test_claude_client.py   # Claude client & CLI integration tests
+  test_database.py        # Database CRUD tests (NEW Phase 5, 16 tests)
+  test_trade_executor.py  # Execution workflow tests (NEW Phase 5, 13 tests)
+  test_trailing_stop.py   # State machine tests (NEW Phase 5, 16 tests)
+  test_telegram.py        # Bot command tests (Phase 4)
+
+docs/                     # Comprehensive documentation (NEW Phase 5)
+  codebase-summary.md     # Architecture overview
+  api-documentation.md    # API reference
+  system-architecture.md  # Technical design
+  project-overview-pdr.md # Requirements & planning
 
 data/                  # Trade data and CSV exports
 logs/                  # Application logs
@@ -79,6 +93,38 @@ plans/                 # Development phase plans and reviews
 - ✓ Path validation and security checks
 - ✓ 46 test cases for signal parsing + 24 tests for Claude client (70 total)
 
+## Phase 4: Telegram Bot & Signal Notifications (Complete)
+
+- ✓ Telegram bot with aiogram 3.x
+- ✓ /start, /signal, /positions, /trades, /balance commands
+- ✓ Real-time trade notifications
+- ✓ Authorization checks (chat_id validation)
+- ✓ Order confirmation messages
+- ✓ Position monitoring alerts
+- ✓ Account balance queries
+- ✓ User-friendly formatting
+- ✓ Complete integration with executor
+
+## Phase 5: Trade Execution & Risk Management (Complete)
+
+- ✓ Market order placement (BUY/SELL) via MT5
+- ✓ Dynamic position sizing with risk percentage
+- ✓ Confidence-based position multipliers (75%+ = full, 60-74% = half)
+- ✓ Stop loss and take profit placement
+- ✓ Partial position closing at TP levels
+- ✓ Position SL/TP modification
+- ✓ SQLite database for trade persistence
+- ✓ **NEW**: Trailing stop state machine (inactive → activated → trailing)
+- ✓ **NEW**: Trailing stop activation (TP1 hit OR profit > 1R)
+- ✓ **NEW**: Breakeven + buffer logic (5 pips)
+- ✓ **NEW**: ATR-based trail distance (1.5x ATR)
+- ✓ **NEW**: Paper trading mode (default safe)
+- ✓ **NEW**: Magic number for order identification
+- ✓ **NEW**: Complete trade schema with trailing_state tracking
+- ✓ 45 comprehensive unit tests (database: 16, executor: 13, trailing: 16)
+- ✓ Test coverage: 84-96% across modules
+- ✓ Code review: A- (Excellent with 5 non-blocking findings)
+
 ## Key Features
 
 - **Configurable Risk Management**: Risk percentage, max position size, stop loss management
@@ -107,11 +153,11 @@ See `plans/` directory for detailed phase implementations and code reviews.
 
 ## Next Phases
 
-- Phase 4: Telegram Bot & Signal Notifications
-- Phase 5: Trade Execution & Risk Management
-- Phase 6: System Orchestration
-- Phase 7: Backtesting & Analytics
-- Phase 8: Web Dashboard & Reporting
+- Phase 6: System Orchestration (APScheduler, background workers, error recovery)
+- Phase 6.5: News Integration (Economic calendar, blackout periods)
+- Phase 7: Comprehensive Testing Framework (Backtesting engine, performance metrics)
+- Phase 8: Web Dashboard (FastAPI + React, real-time monitoring)
+- Phase 9: Advanced Analytics (Trade statistics, optimization, reporting)
 
 ## Environment Setup
 
