@@ -1,13 +1,14 @@
 ---
 title: "MT5 Elliott Wave Auto-Trading System"
 description: "Semi-automated XAUUSD trading using Claude AI for wave analysis with Telegram notifications"
-status: pending
+status: in-progress
 priority: P1
 effort: 41h
 branch: main
 tags: [trading, automation, ai, mt5, telegram]
 created: 2026-01-04
 updated: 2026-01-04
+completed_phases: 2
 ---
 
 # MT5 Elliott Wave Auto-Trading System
@@ -72,7 +73,7 @@ Backtest Analytics
 | # | Phase | Status | Effort | Link | Notes |
 |---|-------|--------|--------|------|-------|
 | 1 | Project Setup | Done | 2h | [phase-01](./phase-01-project-setup.md) | +env vars |
-| 2 | MT5 Data Export | Pending | 3h | [phase-02](./phase-02-mt5-data-export.md) | |
+| 2 | MT5 Data Export | Done | 3h | [phase-02](./phase-02-mt5-data-export.md) | All 4 timeframes export OK |
 | 3 | Claude AI Integration | Pending | **5h** | [phase-03](./phase-03-claude-integration.md) | +enhanced parsing |
 | 4 | Telegram Bot | Pending | 4h | [phase-04](./phase-04-telegram-bot.md) | |
 | 5 | Trade Execution | Pending | **5h** | [phase-05](./phase-05-trade-execution.md) | +trailing stop |

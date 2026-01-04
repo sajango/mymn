@@ -2,7 +2,7 @@
 
 An automated trading system for MetaTrader 5 that uses Elliott Wave analysis to identify trading opportunities on gold (XAUUSD) with Telegram notifications and paper trading support.
 
-**Current Status**: Phase 1 Complete ✓
+**Current Status**: Phase 2 Complete ✓
 
 ## Quick Start
 
@@ -30,10 +30,12 @@ An automated trading system for MetaTrader 5 that uses Elliott Wave analysis to 
 src/
   __init__.py          # Package initialization
   config.py            # Settings management (Pydantic)
+  mt5_client.py        # MT5 client & indicator calculations
 
 tests/
   __init__.py          # Test package initialization
   test_config.py       # Configuration tests
+  test_mt5.py          # MT5 client & indicator tests
 
 data/                  # Trade data and CSV exports
 logs/                  # Application logs
@@ -49,6 +51,16 @@ logs/                  # Application logs
 - ✓ Logging infrastructure
 - ✓ Database path configuration
 - ✓ Unit tests for configuration
+
+## Phase 2: MT5 Data Export (Complete)
+
+- ✓ MT5 client with connection management
+- ✓ OHLCV data fetching from MT5 (H4, H1, M30, M15)
+- ✓ Technical indicators: RSI, EMA, MACD, ATR
+- ✓ CSV export with indicators for all timeframes
+- ✓ Symbol validation and spread monitoring
+- ✓ Comprehensive indicator tests (16+ test cases)
+- ✓ Graceful MT5 initialization with retry logic
 
 ## Key Features
 
@@ -78,7 +90,6 @@ See `/docs/PHASE_1.md` for detailed implementation notes.
 
 ## Next Phases
 
-- Phase 2: MT5 Integration & Data Collection
 - Phase 3: Elliott Wave Pattern Recognition
 - Phase 4: Signal Generation Engine
 - Phase 5: Risk Management & Order Execution

@@ -1,82 +1,15 @@
-# Phase 2: MT5 Data Export
+"""MT5 client for data export and trade execution."""
 
-## Context Links
-- [Plan Overview](./plan.md)
-- [Phase 1: Project Setup](./phase-01-project-setup.md)
-- [MT5 Research](./research/researcher-02-mt5-python.md)
-
-## Overview
-- **Priority**: P1
-- **Status**: Done
-- **Effort**: 3h
-- **Description**: Connect to MT5, fetch OHLCV data, calculate indicators, export CSV
-
-## Key Insights
-- MT5 terminal must be running on Windows
-- Use `copy_rates_from_pos()` for data fetching
-- Calculate indicators in Python (no TA-Lib dependency)
-- Export 4 timeframes: H4, H1, M30, M15 (200 candles each)
-- Symbol name varies by broker (XAUUSD, XAUUSDm, GOLD)
-
-## Requirements
-
-### Functional
-- Initialize MT5 connection with retry
-- Fetch 200 candles for each timeframe
-- Calculate RSI(14), EMA(34), EMA(89), MACD(12,26,9), ATR(14)
-- Export to CSV with correct column format
-- Health check for connection status
-
-### Non-Functional
-- Sync operations (will be wrapped in executor)
-- Graceful handling of disconnection
-- Validate symbol existence before fetch
-
-## Architecture
-
-### Data Flow
-```
-MT5 Terminal
-    ↓
-mt5.initialize()
-    ↓
-mt5.copy_rates_from_pos(symbol, tf, 0, 200)
-    ↓
-pd.DataFrame conversion
-    ↓
-calculate_indicators()
-    ↓
-df.to_csv()
-```
-
-### CSV Output Format
-```
-timestamp,open,high,low,close,tick_volume,rsi_14,ema_34,ema_89,macd,macd_signal,macd_histogram,atr_14
-2026.01.04 12:00,3340.50,3345.20,3338.00,3342.80,1234,52.3,3341.5,3335.2,2.5,1.8,0.7,12.5
-```
-
-## Related Code Files
-
-### Files to Create
-- `src/mt5_client.py` - MT5 connection and operations
-
-## Implementation Steps
-
-1. **Create src/mt5_client.py**
-
-```python
-"""MT5 client for data export and trade execution"""
-import time
 import logging
+import time
 from pathlib import Path
-from datetime import datetime
 from typing import Optional
 
 import MetaTrader5 as mt5
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-from src.config import config
+from src.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -89,25 +22,44 @@ TIMEFRAMES = {
 
 
 class MT5Client:
-    def __init__(self):
+    """Client for MT5 terminal operations."""
+
+    def __init__(self, config=None):
         self._initialized = False
+        self._config = config
+
+    @property
+    def config(self):
+        """Lazy load config on first access."""
+        if self._config is None:
+            self._config = get_settings()
+        return self._config
 
     def initialize(self, retries: int = 3, delay: float = 2.0) -> bool:
-        """Initialize MT5 connection with retry"""
+        """Initialize MT5 connection with retry.
+
+        Args:
+            retries: Number of retry attempts
+            delay: Delay between retries in seconds
+
+        Returns:
+            True if initialization successful
+        """
         for attempt in range(retries):
             try:
-                if config.mt5_path:
-                    success = mt5.initialize(path=config.mt5_path)
+                if self.config.mt5_path:
+                    success = mt5.initialize(path=self.config.mt5_path)
                 else:
                     success = mt5.initialize()
 
                 if success:
                     self._initialized = True
-                    logger.info(f"MT5 initialized: {mt5.terminal_info()}")
+                    info = mt5.terminal_info()
+                    logger.info(f"MT5 initialized: {info}")
                     return True
 
                 error = mt5.last_error()
-                logger.warning(f"MT5 init attempt {attempt+1} failed: {error}")
+                logger.warning(f"MT5 init attempt {attempt + 1} failed: {error}")
 
             except Exception as e:
                 logger.error(f"MT5 init exception: {e}")
@@ -117,25 +69,37 @@ class MT5Client:
         logger.error("MT5 initialization failed after all retries")
         return False
 
-    def shutdown(self):
-        """Shutdown MT5 connection"""
+    def shutdown(self) -> None:
+        """Shutdown MT5 connection."""
         if self._initialized:
             mt5.shutdown()
             self._initialized = False
             logger.info("MT5 shutdown complete")
 
     def is_connected(self) -> bool:
-        """Check if MT5 is connected"""
+        """Check if MT5 is connected.
+
+        Returns:
+            True if connected and terminal is active
+        """
         if not self._initialized:
             return False
         try:
             info = mt5.terminal_info()
             return info is not None and info.connected
-        except:
+        except Exception as e:
+            logger.warning(f"Connection check failed: {e}")
             return False
 
     def validate_symbol(self, symbol: str) -> bool:
-        """Check if symbol exists and select it"""
+        """Check if symbol exists and select it.
+
+        Args:
+            symbol: Trading symbol to validate
+
+        Returns:
+            True if symbol is valid and selected
+        """
         info = mt5.symbol_info(symbol)
         if info is None:
             logger.error(f"Symbol {symbol} not found")
@@ -148,10 +112,42 @@ class MT5Client:
 
         return True
 
+    def get_current_spread(self, symbol: str) -> Optional[float]:
+        """Get current spread in pips for symbol.
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            Spread in pips or None if unavailable
+        """
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return None
+
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return None
+
+        # Point is the smallest price change
+        spread_points = tick.ask - tick.bid
+        # For gold, 1 pip = 0.1, point = 0.01 (10 points = 1 pip)
+        spread_pips = spread_points / info.point / 10
+        return round(spread_pips, 2)
+
     def fetch_ohlcv(
         self, symbol: str, timeframe: str, bars: int = 200
     ) -> Optional[pd.DataFrame]:
-        """Fetch OHLCV data for given symbol and timeframe"""
+        """Fetch OHLCV data for given symbol and timeframe.
+
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe string (H4, H1, M30, M15)
+            bars: Number of bars to fetch
+
+        Returns:
+            DataFrame with OHLCV data or None on error
+        """
         if timeframe not in TIMEFRAMES:
             logger.error(f"Invalid timeframe: {timeframe}")
             return None
@@ -166,29 +162,60 @@ class MT5Client:
 
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s")
-        df = df.rename(columns={"time": "timestamp", "tick_volume": "tick_volume"})
+        df = df.rename(columns={"time": "timestamp"})
 
         return df[["timestamp", "open", "high", "low", "close", "tick_volume"]]
 
     @staticmethod
     def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-        """Calculate RSI"""
+        """Calculate RSI indicator.
+
+        Args:
+            close: Close price series
+            period: RSI period
+
+        Returns:
+            RSI values series
+        """
         delta = close.diff()
         gain = delta.where(delta > 0, 0).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        # Handle division by zero - when loss is 0, RSI is 100
+        loss = loss.replace(0, np.nan)
         rs = gain / loss
-        return 100 - (100 / (1 + rs))
+        rsi = 100 - (100 / (1 + rs))
+        # When loss is 0 (all gains), RSI = 100
+        rsi = rsi.fillna(100)
+        return rsi
 
     @staticmethod
     def calculate_ema(close: pd.Series, period: int) -> pd.Series:
-        """Calculate EMA"""
+        """Calculate EMA indicator.
+
+        Args:
+            close: Close price series
+            period: EMA period
+
+        Returns:
+            EMA values series
+        """
         return close.ewm(span=period, adjust=False).mean()
 
     @staticmethod
     def calculate_macd(
         close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
     ) -> tuple[pd.Series, pd.Series, pd.Series]:
-        """Calculate MACD, Signal, Histogram"""
+        """Calculate MACD indicator.
+
+        Args:
+            close: Close price series
+            fast: Fast EMA period
+            slow: Slow EMA period
+            signal: Signal line period
+
+        Returns:
+            Tuple of (MACD line, Signal line, Histogram)
+        """
         ema_fast = close.ewm(span=fast, adjust=False).mean()
         ema_slow = close.ewm(span=slow, adjust=False).mean()
         macd_line = ema_fast - ema_slow
@@ -200,7 +227,17 @@ class MT5Client:
     def calculate_atr(
         high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
     ) -> pd.Series:
-        """Calculate ATR"""
+        """Calculate ATR indicator.
+
+        Args:
+            high: High price series
+            low: Low price series
+            close: Close price series
+            period: ATR period
+
+        Returns:
+            ATR values series
+        """
         tr1 = high - low
         tr2 = abs(high - close.shift())
         tr3 = abs(low - close.shift())
@@ -208,7 +245,14 @@ class MT5Client:
         return tr.rolling(window=period).mean()
 
     def add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add all indicators to dataframe"""
+        """Add all technical indicators to dataframe.
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            DataFrame with added indicator columns
+        """
         df = df.copy()
 
         # RSI
@@ -229,9 +273,22 @@ class MT5Client:
 
         return df
 
-    def export_csv(self, symbol: str, output_dir: Optional[Path] = None) -> dict[str, Path]:
-        """Export all timeframes to CSV with indicators"""
-        output_dir = output_dir or config.csv_dir
+    def export_csv(
+        self, symbol: str, output_dir: Optional[Path] = None
+    ) -> dict[str, Path]:
+        """Export all timeframes to CSV with indicators.
+
+        Args:
+            symbol: Trading symbol
+            output_dir: Output directory (defaults to config csv_dir)
+
+        Returns:
+            Dict mapping timeframe to file path
+
+        Raises:
+            ValueError: If symbol is invalid
+        """
+        output_dir = output_dir or self.config.csv_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not self.validate_symbol(symbol):
@@ -239,7 +296,7 @@ class MT5Client:
 
         exported = {}
 
-        for tf_name in TIMEFRAMES.keys():
+        for tf_name in TIMEFRAMES:
             df = self.fetch_ohlcv(symbol, tf_name, 200)
             if df is None:
                 logger.warning(f"Skipping {tf_name}: no data")
@@ -268,78 +325,3 @@ class MT5Client:
 
 # Singleton instance
 mt5_client = MT5Client()
-```
-
-2. **Add basic tests**
-
-```python
-# tests/test_mt5.py
-import pytest
-from src.mt5_client import mt5_client, MT5Client
-
-def test_indicator_calculations():
-    """Test indicator calculations without MT5"""
-    import pandas as pd
-    import numpy as np
-
-    # Create sample data
-    data = {
-        "close": [100, 102, 101, 103, 104, 103, 105, 106, 104, 107],
-        "high": [101, 103, 102, 104, 105, 104, 106, 107, 105, 108],
-        "low": [99, 101, 100, 102, 103, 102, 104, 105, 103, 106],
-    }
-    df = pd.DataFrame(data)
-
-    # Test RSI
-    rsi = MT5Client.calculate_rsi(df["close"], period=5)
-    assert len(rsi) == 10
-    assert not rsi.iloc[5:].isna().any()
-
-    # Test EMA
-    ema = MT5Client.calculate_ema(df["close"], period=3)
-    assert len(ema) == 10
-
-    # Test MACD
-    macd, signal, hist = MT5Client.calculate_macd(df["close"], 3, 5, 2)
-    assert len(macd) == 10
-
-    # Test ATR
-    atr = MT5Client.calculate_atr(df["high"], df["low"], df["close"], period=3)
-    assert len(atr) == 10
-```
-
-## Todo List
-
-- [x] Create src/mt5_client.py
-- [x] Implement initialize() with retry
-- [x] Implement fetch_ohlcv()
-- [x] Implement indicator calculations
-- [x] Implement export_csv()
-- [x] Write tests/test_mt5.py (15 tests, all passing)
-- [x] Test with live MT5 terminal
-- [x] Verify CSV format matches instructions.md
-
-## Success Criteria
-
-- [x] MT5 connects successfully
-- [x] All 4 timeframes export correctly
-- [x] CSV columns match instructions.md format
-- [x] Indicators calculated correctly
-- [x] Graceful handling when MT5 not running
-
-## Risk Assessment
-
-| Risk | Probability | Impact | Mitigation |
-|------|-------------|--------|------------|
-| Symbol name mismatch | Medium | High | Auto-detect from broker |
-| MT5 not running | Medium | High | Clear error message |
-| Data gaps | Low | Medium | Check for None values |
-
-## Security Considerations
-
-- No credentials in this phase
-- CSV files may contain price data (not sensitive)
-
-## Next Steps
-
-→ [Phase 3: Claude AI Integration](./phase-03-claude-integration.md)
