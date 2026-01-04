@@ -1,0 +1,35 @@
+# MT5 Elliott Wave Auto-Trading System
+# Python 3.11+ required
+
+# Configuration
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# MetaTrader 5
+MetaTrader5>=5.0.45
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Telegram bot
+python-telegram-bot[job-queue]>=20.0
+
+# Scheduling
+APScheduler>=3.10.0
+
+# Database
+aiosqlite>=0.19.0
+
+# Web dashboard (Phase 8)
+fastapi>=0.100.0
+uvicorn>=0.22.0
+
+# Testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+
+# NOTE: Claude Code CLI - No Python package needed (uses subprocess)
+# Ensure 'claude' command is available in PATH
