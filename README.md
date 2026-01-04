@@ -2,7 +2,7 @@
 
 An automated trading system for MetaTrader 5 that uses Elliott Wave analysis to identify trading opportunities on gold (XAUUSD) with Telegram notifications and paper trading support.
 
-**Current Status**: Phase 5 Complete ✓ (Trade Execution)
+**Current Status**: Phase 6 Complete ✓ (System Orchestration)
 
 ## Quick Start
 
@@ -28,15 +28,19 @@ An automated trading system for MetaTrader 5 that uses Elliott Wave analysis to 
 
 ```
 src/
-  __init__.py              # Package initialization
+  __init__.py              # Package initialization (v0.6.0)
   config.py               # Settings management (Pydantic)
   mt5_client.py           # MT5 client & indicator calculations
   signal_parser.py        # Trading signal models & parsing
   claude_client.py        # Claude CLI wrapper
-  database.py             # SQLite trade persistence (NEW Phase 5)
-  trade_executor.py       # Signal execution coordinator (NEW Phase 5)
-  trailing_stop_manager.py # Trailing stop state machine (NEW Phase 5)
+  database.py             # SQLite trade persistence (Phase 5)
+  trade_executor.py       # Signal execution coordinator (Phase 5)
+  trailing_stop_manager.py # Trailing stop state machine (Phase 5)
   telegram_bot.py         # Telegram bot interface (Phase 4)
+  scheduler.py            # APScheduler M15/30s cron jobs (NEW Phase 6)
+  session_detector.py     # UTC session & confidence modifier (NEW Phase 6)
+  spread_checker.py       # Spread validation & alerts (NEW Phase 6)
+  main.py                 # TradingOrchestrator & circuit breaker (NEW Phase 6)
 
 tests/
   __init__.py             # Test package initialization
@@ -114,16 +118,34 @@ plans/                 # Development phase plans and reviews
 - ✓ Partial position closing at TP levels
 - ✓ Position SL/TP modification
 - ✓ SQLite database for trade persistence
-- ✓ **NEW**: Trailing stop state machine (inactive → activated → trailing)
-- ✓ **NEW**: Trailing stop activation (TP1 hit OR profit > 1R)
-- ✓ **NEW**: Breakeven + buffer logic (5 pips)
-- ✓ **NEW**: ATR-based trail distance (1.5x ATR)
-- ✓ **NEW**: Paper trading mode (default safe)
-- ✓ **NEW**: Magic number for order identification
-- ✓ **NEW**: Complete trade schema with trailing_state tracking
+- ✓ Trailing stop state machine (inactive → activated → trailing)
+- ✓ Trailing stop activation (TP1 hit OR profit > 1R)
+- ✓ Breakeven + buffer logic (5 pips)
+- ✓ ATR-based trail distance (1.5x ATR)
+- ✓ Paper trading mode (default safe)
+- ✓ Magic number for order identification
+- ✓ Complete trade schema with trailing_state tracking
 - ✓ 45 comprehensive unit tests (database: 16, executor: 13, trailing: 16)
 - ✓ Test coverage: 84-96% across modules
-- ✓ Code review: A- (Excellent with 5 non-blocking findings)
+
+## Phase 6: System Orchestration (Complete)
+
+- ✓ APScheduler with async event loop (M15 cron, 30s interval)
+- ✓ TradingOrchestrator class for lifecycle management
+- ✓ UTC-based session detection (London, NY, Asian, quiet hours)
+- ✓ Session quality scoring (high/medium/low) with confidence modifiers
+- ✓ Market open validation before analysis
+- ✓ Spread checking with pip conversion and alerts
+- ✓ Spread skipping with reason tracking (skipped_signals table)
+- ✓ M15 analysis job: market check → spread check → Claude → modifier → threshold
+- ✓ TP monitor job: 30s interval position checks + trailing stop updates
+- ✓ Circuit breaker: 5 consecutive failures pause analysis
+- ✓ TP monitor alerts: 3 consecutive failures trigger Telegram notification
+- ✓ Lazy loading of components (db, bot, executor, trailing, session, spread)
+- ✓ Graceful shutdown with signal handling
+- ✓ ThreadPoolExecutor for sync operations (MT5, Claude CLI)
+- ✓ MT5 reconnection logic during analysis
+- ✓ Error recovery with detailed logging
 
 ## Key Features
 
@@ -153,11 +175,10 @@ See `plans/` directory for detailed phase implementations and code reviews.
 
 ## Next Phases
 
-- Phase 6: System Orchestration (APScheduler, background workers, error recovery)
-- Phase 6.5: News Integration (Economic calendar, blackout periods)
-- Phase 7: Comprehensive Testing Framework (Backtesting engine, performance metrics)
-- Phase 8: Web Dashboard (FastAPI + React, real-time monitoring)
-- Phase 9: Advanced Analytics (Trade statistics, optimization, reporting)
+- Phase 7: News Integration (Economic calendar, blackout periods, calendar API)
+- Phase 8: Comprehensive Testing Framework (Backtesting engine, performance metrics)
+- Phase 9: Web Dashboard (FastAPI + React, real-time monitoring)
+- Phase 10: Advanced Analytics (Trade statistics, optimization, reporting)
 
 ## Environment Setup
 

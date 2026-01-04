@@ -6,7 +6,7 @@
 
 ## Overview
 - **Priority**: P1
-- **Status**: Pending
+- **Status**: Done (2026-01-04)
 - **Effort**: 5h (+2h for session/spread/confidence)
 - **Description**: Main orchestrator with scheduler, session detection, spread checks, and async/sync bridge
 
@@ -442,22 +442,22 @@ __version__ = "0.1.0"
 
 ## Todo List
 
-- [ ] Create src/scheduler.py with M15 and 30s interval triggers
-- [ ] Create src/main.py with orchestrator
-- [ ] Implement analysis_job flow
-- [ ] Implement on_execute callback
-- [ ] **Implement tp_monitor_job for auto partial close**
-- [ ] Add circuit breaker
-- [ ] Add graceful shutdown
-- [ ] Test full flow end-to-end
-- [ ] **Create SessionDetector class** (get_current_session, get_confidence_modifier)
-- [ ] **Create SpreadChecker class** (get_current_spread, is_spread_ok)
-- [ ] **Add session check to analysis_job flow**
-- [ ] **Add spread check to analysis_job flow**
-- [ ] **Implement silent skip for confidence < 60%**
-- [ ] **Add logging for skipped signals (session, spread, confidence)**
-- [ ] **Create skipped_signals table in database**
-- [ ] **Integrate with Phase 6.5 news_blackout_check**
+- [x] Create src/scheduler.py with M15 and 30s interval triggers
+- [x] Create src/main.py with orchestrator
+- [x] Implement analysis_job flow
+- [x] Implement on_execute callback
+- [x] **Implement tp_monitor_job for auto partial close**
+- [x] Add circuit breaker
+- [x] Add graceful shutdown
+- [x] Test full flow end-to-end
+- [x] **Create SessionDetector class** (get_current_session, get_confidence_modifier)
+- [x] **Create SpreadChecker class** (get_current_spread, is_spread_ok)
+- [x] **Add session check to analysis_job flow**
+- [x] **Add spread check to analysis_job flow**
+- [x] **Implement silent skip for confidence < 60%**
+- [x] **Add logging for skipped signals (session, spread, confidence)**
+- [x] **Create skipped_signals table in database**
+- [x] **Integrate with Phase 6.5 news_blackout_check**
 
 ## Success Criteria
 

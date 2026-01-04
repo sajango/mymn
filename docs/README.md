@@ -1,7 +1,7 @@
 # MT5 Elliott Wave Trading System - Documentation Hub
 
 **Last Updated**: 2026-01-04
-**Phase**: 5 Complete (Trade Execution)
+**Phase**: 6 Complete (System Orchestration)
 **Status**: Production Ready
 
 ## Welcome to the Documentation
@@ -212,6 +212,10 @@ Core Modules:
 - trade_executor.py   → Execution workflow
 - trailing_stop_manager.py → Stop loss management
 - telegram_bot.py     → User interface
+- scheduler.py        → APScheduler configuration (Phase 6)
+- session_detector.py → Session detection & modifiers (Phase 6)
+- spread_checker.py   → Spread validation (Phase 6)
+- main.py             → System orchestration (Phase 6)
 ```
 
 ### API Summary (from API Documentation)
@@ -256,6 +260,17 @@ Core Modules:
 - ✅ Paper trading mode
 - ✅ 45/45 tests passing
 - ✅ Code review: A- grade
+- ✅ Documentation: Complete
+
+### Phase 6: System Orchestration ✅ COMPLETE
+- ✅ APScheduler integration (M15 cron, 30s intervals)
+- ✅ TradingOrchestrator with lifecycle management
+- ✅ UTC session detection with confidence modifiers
+- ✅ Spread validation and skipping logic
+- ✅ M15 analysis job with complete flow
+- ✅ TP monitor job (30s interval)
+- ✅ Circuit breaker pattern (5 failures threshold)
+- ✅ Error recovery and reconnection logic
 - ✅ Documentation: Complete
 
 ### Metrics

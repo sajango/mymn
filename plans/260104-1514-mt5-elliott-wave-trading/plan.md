@@ -8,7 +8,7 @@ branch: main
 tags: [trading, automation, ai, mt5, telegram]
 created: 2026-01-04
 updated: 2026-01-04
-completed_phases: 5
+completed_phases: 6
 ---
 
 # MT5 Elliott Wave Auto-Trading System
@@ -77,7 +77,7 @@ Backtest Analytics
 | 3 | Claude AI Integration | Done | **5h** | [phase-03](./phase-03-claude-integration.md) | +enhanced parsing (2026-01-04) |
 | 4 | Telegram Bot | Done | 4h | [phase-04](./phase-04-telegram-bot.md) | Completed 2026-01-04 |
 | 5 | Trade Execution | Done | **5h** | [phase-05](./phase-05-trade-execution.md) | +trailing stop |
-| 6 | Orchestration | Pending | **5h** | [phase-06](./phase-06-orchestration.md) | +session/spread |
+| 6 | Orchestration | Done | **5h** | [phase-06](./phase-06-orchestration.md) | +session/spread (2026-01-04) |
 | 6.5 | **News Integration** | Pending | **3h** | [phase-06.5](./phase-06.5-news-integration.md) | **NEW** |
 | 7 | Testing & Paper Trading | Pending | 4h | [phase-07](./phase-07-testing.md) | |
 | 8 | Web Dashboard | Pending | 6h | [phase-08](./phase-08-web-dashboard.md) | |

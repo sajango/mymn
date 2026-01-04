@@ -158,6 +158,25 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)"
             )
 
+            # Skipped signals table for tracking silent skips
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS skipped_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    reason TEXT NOT NULL,
+                    details TEXT,
+                    session TEXT,
+                    spread_pips REAL,
+                    confidence INTEGER,
+                    signal_id INTEGER,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (signal_id) REFERENCES signals (id)
+                )
+            """)
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_skipped_reason ON skipped_signals(reason)"
+            )
+
             conn.commit()
             logger.info(f"Database initialized: {self.db_path}")
 
@@ -570,6 +589,65 @@ class Database:
             ).fetchone()
 
             return dict(row) if row else {}
+
+    def save_skipped_signal(
+        self,
+        reason: str,
+        details: str = "",
+        session: Optional[str] = None,
+        spread_pips: Optional[float] = None,
+        confidence: Optional[int] = None,
+        signal_id: Optional[int] = None,
+    ) -> int:
+        """Save skipped signal for analytics.
+
+        Args:
+            reason: Skip reason (spread_high, low_confidence, etc.)
+            details: Detailed explanation
+            session: Trading session name
+            spread_pips: Current spread if relevant
+            confidence: Signal confidence if relevant
+            signal_id: Associated signal ID if available
+
+        Returns:
+            Skipped signal ID
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO skipped_signals (
+                    reason, details, session, spread_pips, confidence, signal_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (reason, details, session, spread_pips, confidence, signal_id),
+            )
+            skip_id = cursor.lastrowid
+            conn.commit()
+            logger.info(f"Skipped signal saved: id={skip_id}, reason={reason}")
+            return skip_id
+
+    def get_skipped_summary(self, days: int = 7) -> dict:
+        """Get summary of skipped signals.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            Summary dict with skip counts by reason
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT reason, COUNT(*) as count
+                FROM skipped_signals
+                WHERE created_at >= datetime('now', ? || ' days')
+                GROUP BY reason
+                ORDER BY count DESC
+                """,
+                (f"-{days}",),
+            ).fetchall()
+
+            return {row["reason"]: row["count"] for row in rows}
 
 
 # Lazy singleton
