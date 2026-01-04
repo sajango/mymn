@@ -1,8 +1,8 @@
 # System Architecture - MT5 Elliott Wave Trading System
 
 **Last Updated**: 2026-01-04
-**Architecture Version**: 1.0
-**Current Phase**: Phase 5 Complete (Trade Execution)
+**Architecture Version**: 1.1
+**Current Phase**: Phase 8 Complete (Web Dashboard)
 
 ## Table of Contents
 
@@ -23,52 +23,61 @@
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    TELEGRAM USER INTERFACE                   │
-│                    (telegram_bot.py)                         │
-│        /signal, /positions, /trades, /balance commands       │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-        ┌────────────▼───────────────┐
-        │  SIGNAL PROCESSING LAYER   │
-        │  (signal_parser.py)        │
-        │  (claude_client.py)        │
-        │  ✓ Parse trading signals   │
-        │  ✓ Extract from Claude AI  │
-        │  ✓ Validate & convert      │
-        └────────────┬───────────────┘
-                     │
-        ┌────────────▼──────────────────────┐
-        │   EXECUTION & MANAGEMENT LAYER    │
-        │   (trade_executor.py)             │
-        │   (trailing_stop_manager.py)      │
-        │   ✓ Position sizing               │
-        │   ✓ Order placement               │
-        │   ✓ Trailing stop logic           │
-        │   ✓ Partial closes                │
-        └────────────┬──────────────────────┘
-                     │
-        ┌────────────▼────────────────────┐
-        │  MARKET DATA & BROKER LAYER     │
-        │  (mt5_client.py)                │
-        │  ✓ Connect to MT5               │
-        │  ✓ Fetch OHLCV data             │
-        │  ✓ Calculate indicators         │
-        │  ✓ Execute orders               │
-        │  ✓ Manage positions             │
-        └────────────┬────────────────────┘
-                     │
-        ┌────────────▼──────────────────────┐
-        │    PERSISTENT DATA LAYER          │
-        │    (database.py)                  │
-        │    SQLite - trades, signals, TP   │
-        └───────────────────────────────────┘
+┌────────────────────────────────────────────┐   ┌──────────────────────────┐
+│  TELEGRAM USER INTERFACE (telegram_bot.py) │   │  WEB DASHBOARD (Phase 8) │
+│  /signal, /positions, /trades, /balance    │   │  http://localhost:3000   │
+│                                            │   │  - Stats & Charts        │
+│                                            │   │  - Trade History         │
+│                                            │   │  - Equity Curve          │
+│                                            │   │  - Performance Analysis  │
+└────────────────────┬───────────────────────┘   └──────────┬───────────────┘
+                     │                                       │
+                     └────────────┬────────────────────────────┘
+                                  │
+                    ┌─────────────▼──────────────────┐
+                    │  DASHBOARD API (FastAPI :8000) │
+                    │  - 11 REST endpoints           │
+                    │  - Rate limiting               │
+                    │  - CORS middleware             │
+                    └─────────────┬──────────────────┘
+                                  │
+        ┌─────────────────────────┴──────────────────────┐
+        │  SIGNAL PROCESSING LAYER                       │
+        │  (signal_parser.py, claude_client.py)          │
+        │  ✓ Parse trading signals                       │
+        │  ✓ Extract from Claude AI                      │
+        │  ✓ Validate & convert                          │
+        └─────────────────────────┬──────────────────────┘
+                                  │
+        ┌─────────────────────────▼──────────────────────┐
+        │   EXECUTION & MANAGEMENT LAYER                 │
+        │   (trade_executor.py, trailing_stop_manager.py)│
+        │   ✓ Position sizing                            │
+        │   ✓ Order placement                            │
+        │   ✓ Trailing stop logic                        │
+        │   ✓ Partial closes                             │
+        └─────────────────────────┬──────────────────────┘
+                                  │
+        ┌─────────────────────────▼──────────────────────┐
+        │  MARKET DATA & BROKER LAYER (mt5_client.py)    │
+        │  ✓ Connect to MT5                              │
+        │  ✓ Fetch OHLCV data                            │
+        │  ✓ Calculate indicators                        │
+        │  ✓ Execute orders                              │
+        │  ✓ Manage positions                            │
+        └─────────────────────────┬──────────────────────┘
+                                  │
+        ┌─────────────────────────▼──────────────────────┐
+        │    PERSISTENT DATA LAYER (database.py)         │
+        │    SQLite: trades, signals, TP, equity, PnL    │
+        │    Read-write: Trading bot                     │
+        │    Read-only: Dashboard API                    │
+        └────────────────────────────────────────────────┘
 
-        ┌─────────────────────────────────┐
-        │   CONFIGURATION LAYER           │
-        │   (config.py)                   │
-        │   Settings from .env file       │
-        └─────────────────────────────────┘
+        ┌──────────────────────────────────────────────┐
+        │   CONFIGURATION LAYER (config.py)            │
+        │   Settings from .env file                    │
+        └──────────────────────────────────────────────┘
 ```
 
 ---

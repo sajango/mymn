@@ -55,5 +55,9 @@ logs/*.log
 .DS_Store
 Thumbs.db
 
+# Node.js
+node_modules/
+dist/
+
 # Project specific
 *.bak

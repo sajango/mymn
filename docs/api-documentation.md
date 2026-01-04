@@ -1,7 +1,7 @@
 # API Documentation - MT5 Elliott Wave Trading System
 
 **Last Updated**: 2026-01-04
-**Current Phase**: Phase 5 Complete
+**Current Phase**: Phase 8 Complete (Web Dashboard)
 
 ## Table of Contents
 
@@ -12,6 +12,7 @@
 5. [Trailing Stop Manager API](#trailing-stop-manager-api)
 6. [Claude Client API](#claude-client-api)
 7. [Telegram Bot API](#telegram-bot-api)
+8. [Dashboard API (Phase 8)](#dashboard-api-phase-8)
 
 ---
 
@@ -1029,6 +1030,332 @@ MIN_CONFIDENCE = 50             # < 50% = skip
 
 ---
 
+## Dashboard API (Phase 8)
+
+### Overview
+RESTful API for the MT5 Trading Dashboard - provides read-only access to trading data for analytics and visualization. Built with FastAPI, deployed in Docker containers.
+
+**Base URL**: `http://localhost:8000/api`
+
+### Authentication
+None required (local use only)
+
+### Rate Limiting
+- 60 requests per minute per IP address
+- Returns HTTP 429 when limit exceeded
+
+### Endpoints
+
+#### `GET /stats`
+Get overall performance statistics
+
+**Response**:
+```json
+{
+  "total_trades": 150,
+  "win_rate": 55.3,
+  "total_pnl": 2450.75,
+  "wins": 83,
+  "losses": 67,
+  "profit_factor": 1.85,
+  "avg_win": 45.2,
+  "avg_loss": -32.8,
+  "consecutive_wins": 5,
+  "consecutive_losses": 2,
+  "max_drawdown": -520.0,
+  "sharpe_ratio": 1.42
+}
+```
+
+---
+
+#### `GET /trades`
+Get paginated trade history
+
+**Query Parameters**:
+- `limit` (int, default: 50): Number of trades to return
+- `offset` (int, default: 0): Pagination offset
+- `status` (str, optional): Filter by status ("open", "closed", "partial")
+- `symbol` (str, optional): Filter by trading symbol
+
+**Response**:
+```json
+[
+  {
+    "id": 1,
+    "symbol": "XAUUSD",
+    "entry_price": 2050.45,
+    "exit_price": 2055.30,
+    "volume": 0.5,
+    "profit": 24.25,
+    "open_time": "2025-01-04T10:30:00",
+    "close_time": "2025-01-04T11:45:00",
+    "status": "closed",
+    "signal_confidence": 72.5,
+    "signal_action": "BUY"
+  }
+]
+```
+
+---
+
+#### `GET /equity`
+Get equity curve data points
+
+**Response**:
+```json
+[
+  {
+    "time": "2025-01-01T00:00:00",
+    "equity": 0.0
+  },
+  {
+    "time": "2025-01-01T10:30:00",
+    "equity": 120.50
+  },
+  {
+    "time": "2025-01-01T11:45:00",
+    "equity": 144.75
+  }
+]
+```
+
+---
+
+#### `GET /daily-pnl`
+Get daily P&L summary
+
+**Response**:
+```json
+[
+  {
+    "date": "2025-01-01",
+    "pnl": 245.30,
+    "trades_count": 8,
+    "win_rate": 62.5
+  },
+  {
+    "date": "2025-01-02",
+    "pnl": -85.20,
+    "trades_count": 5,
+    "win_rate": 40.0
+  }
+]
+```
+
+---
+
+#### `GET /confidence-analysis`
+Analyze signal confidence vs actual outcome
+
+**Response**:
+```json
+[
+  {
+    "confidence_band": "High (75-100)",
+    "total": 45,
+    "wins": 32,
+    "win_rate": 71.1,
+    "avg_profit": 52.3
+  },
+  {
+    "confidence_band": "Medium (60-74)",
+    "total": 62,
+    "wins": 33,
+    "win_rate": 53.2,
+    "avg_profit": 28.5
+  },
+  {
+    "confidence_band": "Low (45-59)",
+    "total": 43,
+    "wins": 18,
+    "win_rate": 41.9,
+    "avg_profit": 12.1
+  }
+]
+```
+
+---
+
+#### `GET /time-analysis`
+Performance by hour of day and day of week
+
+**Response**:
+```json
+{
+  "by_hour": {
+    "0": {"trades": 8, "win_rate": 50.0, "avg_profit": 15.2},
+    "1": {"trades": 12, "win_rate": 58.3, "avg_profit": 22.5},
+    ...
+    "23": {"trades": 10, "win_rate": 55.0, "avg_profit": 18.8}
+  },
+  "by_weekday": {
+    "Monday": {"trades": 22, "win_rate": 54.5, "avg_profit": 28.3},
+    "Tuesday": {"trades": 25, "win_rate": 56.0, "avg_profit": 31.2},
+    ...
+    "Friday": {"trades": 28, "win_rate": 58.9, "avg_profit": 35.1}
+  }
+}
+```
+
+---
+
+#### `GET /positions`
+Get current open positions
+
+**Response**:
+```json
+[
+  {
+    "ticket": 12345,
+    "symbol": "XAUUSD",
+    "type": "BUY",
+    "volume": 0.5,
+    "entry_price": 2050.45,
+    "current_price": 2053.20,
+    "profit": 13.75,
+    "stop_loss": 2045.00,
+    "take_profit": 2065.00,
+    "open_time": "2025-01-04T10:30:00"
+  }
+]
+```
+
+---
+
+#### `GET /signals`
+Get signal history with outcomes
+
+**Response**:
+```json
+[
+  {
+    "id": 42,
+    "timestamp": "2025-01-04T10:15:00",
+    "action": "BUY",
+    "symbol": "XAUUSD",
+    "confidence": 78.5,
+    "reasoning": "Elliott wave count suggests uptrend continuation",
+    "trade_id": 1,
+    "trade_outcome": "WIN",
+    "trade_profit": 24.25
+  }
+]
+```
+
+---
+
+#### `GET /health`
+Health check endpoint
+
+**Response**:
+```json
+{
+  "status": "ok",
+  "database": "connected",
+  "timestamp": "2025-01-04T15:30:00"
+}
+```
+
+---
+
+### Error Responses
+
+**400 Bad Request**
+```json
+{
+  "detail": "Invalid query parameters"
+}
+```
+
+**429 Too Many Requests**
+```json
+{
+  "detail": "Rate limit exceeded"
+}
+```
+
+**500 Internal Server Error**
+```json
+{
+  "detail": "Internal server error"
+}
+```
+
+---
+
+### Implementation Details
+
+#### FastAPI Configuration
+- Framework: FastAPI 0.104+
+- Server: Uvicorn
+- Rate Limiter: slowapi
+- CORS: Configured for localhost:3000 (React frontend)
+
+#### Database
+- Type: SQLite (read-only)
+- Path: `/data/trading.db`
+- Connection Mode: URI with read-only flag
+- Transaction Isolation: WAL (Write-Ahead Logging)
+
+#### Performance
+- Response times: < 100ms for most endpoints
+- Max pagination limit: 500 trades
+- Auto-refresh recommended: 30 seconds
+- Database queries optimized with indexes
+
+---
+
+### Frontend Integration
+
+The React dashboard (`localhost:3000`) consumes these endpoints via Axios:
+
+```typescript
+const api = axios.create({
+  baseURL: '/api',
+  timeout: 5000,
+})
+
+// Example: Fetch stats with React Query
+const { data: stats } = useQuery({
+  queryKey: ['stats'],
+  queryFn: () => api.get('/stats').then(res => res.data),
+  refetchInterval: 30000, // 30 second auto-refresh
+})
+```
+
+---
+
+### Components Using Each Endpoint
+
+| Component | Endpoint |
+|-----------|----------|
+| StatsCards | `/stats` |
+| EquityCurve | `/equity` |
+| DailyPnLChart | `/daily-pnl` |
+| ConfidenceChart | `/confidence-analysis` |
+| TimeHeatmap | `/time-analysis` |
+| OpenPositions | `/positions` |
+| TradesTable | `/trades` |
+
+---
+
+### Deployment
+
+#### Docker Compose
+```bash
+cd dashboard
+docker-compose up -d --build
+```
+
+#### Environment Variables
+- `API_PORT`: Backend port (default: 8000)
+- `WEB_PORT`: Frontend port (default: 3000)
+- `DB_PATH`: Path to trading database
+- `CORS_ORIGINS`: Comma-separated CORS origins
+
+---
+
 **Last Updated**: 2026-01-04
 **API Version**: 1.0
-**Status**: Production Ready (Phase 5)
+**Status**: Production Ready (Phase 8)
