@@ -1,8 +1,8 @@
 # MT5 Elliott Wave Trading System - Codebase Summary
 
 **Last Updated**: 2026-01-04
-**Current Phase**: Phase 5 Complete (Trade Execution)
-**Total Repository**: 122,128 tokens, 510,693 characters, 47 files
+**Current Phase**: Phase 7 Complete (Testing Infrastructure)
+**Total Repository**: 122,128 tokens, 510,693 characters, 50 files (includes tests)
 
 ## Quick Overview
 
@@ -14,6 +14,8 @@ The MT5 Elliott Wave Auto-Trading System is a comprehensive automated trading pl
 - Includes trailing stop loss management with state machine
 - Features paper trading mode for safe testing
 - Tracks all trades and signals in SQLite database
+- Includes 281 comprehensive unit and integration tests (100% passing)
+- 66% overall test coverage with 84-100% core module coverage
 
 ## Architecture Layers
 
@@ -122,6 +124,28 @@ telegram_bot.py    - Telegram bot for notifications and control
   - Real-time trade notifications
 ```
 
+### Layer 8: Testing Infrastructure (Phase 7)
+```
+tests/conftest.py         - Centralized pytest fixtures
+  - temp_db: Temporary SQLite database
+  - mock_mt5: Mocked MT5 client
+  - mock_settings: Test configuration
+  - Environment setup (Telegram credentials)
+
+tests/test_*.py           - 281 unit and integration tests
+  - Signal parsing and validation
+  - Database CRUD operations
+  - Trade execution workflow
+  - Trailing stop state machine
+  - MT5 integration (mocked)
+  - Telegram bot integration (mocked)
+
+pytest.ini                - Pytest configuration
+  - Async test support (pytest-asyncio)
+  - Test discovery patterns
+  - Coverage reporting
+```
+
 ## Data Flow
 
 ### Trading Signal Execution Flow
@@ -181,24 +205,42 @@ Repeat trail logic
 | trailing_stop_manager.py | Stop loss management | test_trailing_stop.py (16 tests) |
 | telegram_bot.py | User interface | test_telegram.py |
 
-### Test Coverage
+### Test Coverage (Phase 7)
 ```
-database.py:              96% coverage
-trade_executor.py:        87% coverage
-trailing_stop_manager.py: 84% coverage
-TOTAL:                    45/45 tests passing
+Core Modules (91-100% coverage):
+- config.py:              91%
+- database.py:            91%
+- signal_parser.py:       97%
+- scheduler.py:           100%
+- session_detector.py:    100%
+- spread_checker.py:      100%
+
+Trade Execution Modules (84-100%):
+- trade_executor.py:      87%
+- trailing_stop_manager.py: 84%
+- claude_client.py:       94%
+- news_calendar.py:       91%
+
+Integration & UI (27-45%):
+- mt5_client.py:          27% (mocked in tests)
+- telegram_bot.py:        45% (mocked in tests)
+- main.py:                0% (orchestration only)
+
+OVERALL:                  281/281 tests passing (100%)
+                          66% coverage
+                          Execution: 9.21 seconds
 ```
 
 ### Documentation (plans/)
-- **phase-01-project-setup.md** - Configuration infrastructure
-- **phase-02-mt5-data-export.md** - Data fetching and indicators
-- **phase-03-claude-integration.md** - AI signal generation
-- **phase-04-telegram-bot.md** - User interface and notifications
-- **phase-05-trade-execution.md** - Trade execution (current)
-- **phase-06-orchestration.md** - System orchestration
-- **phase-06.5-news-integration.md** - News filtering
-- **phase-07-testing.md** - Testing and validation
-- **phase-08-web-dashboard.md** - Web UI planning
+- **phase-01-project-setup.md** - Configuration infrastructure ✅
+- **phase-02-mt5-data-export.md** - Data fetching and indicators ✅
+- **phase-03-claude-integration.md** - AI signal generation ✅
+- **phase-04-telegram-bot.md** - User interface and notifications ✅
+- **phase-05-trade-execution.md** - Trade execution ✅
+- **phase-06-orchestration.md** - System orchestration ✅
+- **phase-06.5-news-integration.md** - News filtering ✅
+- **phase-07-testing.md** - Testing and validation ✅ (current)
+- **phase-08-web-dashboard.md** - Web UI planning (next)
 - **phase-09-backtest-analytics.md** - Backtesting framework
 
 ## Key Design Patterns
