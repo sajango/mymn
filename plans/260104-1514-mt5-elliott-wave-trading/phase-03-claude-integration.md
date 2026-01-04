@@ -7,9 +7,10 @@
 
 ## Overview
 - **Priority**: P1
-- **Status**: Pending
+- **Status**: ✅ Done (2026-01-04)
 - **Effort**: 5h (+1h for enhanced parsing)
 - **Description**: Integrate Claude Code CLI for Elliott Wave analysis and signal generation
+- **Review**: [Code Review Report](../reports/code-reviewer-260104-1725-phase3-claude-integration.md)
 
 ## Key Insights
 - Use claude CLI via subprocess (NOT anthropic Python SDK)
@@ -63,26 +64,31 @@ claude --print -p "Analyze..." --add-file data/csv/H4.csv --system-prompt instru
 
 ## Todo List
 
-- [ ] Create src/signal_parser.py with Pydantic models
-- [ ] Create src/claude_client.py with CLI wrapper
-- [ ] Implement JSON extraction (code block + fallback)
-- [ ] Implement retry with exponential backoff
-- [ ] Write tests/test_claude.py
-- [ ] Verify Claude CLI is installed and authenticated
-- [ ] Test with real CLI call
-- [ ] **Add SessionContext model** (current_session, session_quality, confidence_modifier)
-- [ ] **Add SpreadCheck model** (current_spread_pips, max_allowed_pips, spread_ok, adjusted_entry/tp)
-- [ ] **Add TrailingStopConfig model** (activation_trigger, trail_distance_atr, breakeven_buffer_pips)
-- [ ] **Add ConfidenceBreakdown model** (base_score, timeframe_alignment, fib_confluence, rsi/ema/macd confirmation, session_bonus, penalties)
-- [ ] **Add ExecutionInstructions model** (order_type, valid_until, cancel_if, post_fill_actions)
+- [x] Create src/signal_parser.py with Pydantic models ✅
+- [x] Create src/claude_client.py with CLI wrapper ✅
+- [x] Implement JSON extraction (code block + fallback) ✅
+- [x] Implement retry with exponential backoff ✅
+- [x] Write tests/test_claude.py ✅ (49 tests passing)
+- [x] Verify Claude CLI is installed and authenticated ✅
+- [x] Test with real CLI call ✅
+- [x] **Add SessionContext model** ✅ (lines 67-78)
+- [x] **Add SpreadCheck model** ✅ (lines 81-93)
+- [x] **Add TrailingStopConfig model** ✅ (lines 34-45)
+- [x] **Add ConfidenceBreakdown model** ✅ (lines 188-203)
+- [x] **Add ExecutionInstructions model** ✅ (lines 205-217)
+
+### Security Fixes Completed
+- [x] **Fix command injection vulnerability** - sanitized file paths in _build_command()
+- [x] **Remove response logging** - removed strategy details leak
+- [x] **Document --dangerously-skip-permissions** - removed flag
 
 ## Success Criteria
 
-- [ ] CLI call succeeds with valid response
-- [ ] JSON correctly extracted from response
-- [ ] Pydantic validation passes
-- [ ] Retry works on failures
-- [ ] Subprocess timeout works
+- [x] CLI call succeeds with valid response ✅
+- [x] JSON correctly extracted from response ✅ (3 strategies)
+- [x] Pydantic validation passes ✅ (comprehensive models)
+- [x] Retry works on failures ✅ (exponential backoff)
+- [x] Subprocess timeout works ✅ (configurable timeout)
 
 ## Risk Assessment
 

@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node:*)",
+      "Bash(~.claudeskills.venvScriptspython.exe ~/.claude/scripts/generate_catalogs.py --skills)",
+      "Bash(C:/Users/sangn/.claude/skills/.venv/Scripts/python.exe C:/Users/sangn/.claude/scripts/generate_catalogs.py --skills)",
+      "Skill(planning)",
+      "Skill(planning:*)",
+      "Skill(plan:validate)",
+      "Skill(plan:validate:*)",
+      "Bash(cat:*)",
+      "Bash(python:*)"
+    ]
+  }
+}

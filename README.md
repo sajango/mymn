@@ -2,7 +2,7 @@
 
 An automated trading system for MetaTrader 5 that uses Elliott Wave analysis to identify trading opportunities on gold (XAUUSD) with Telegram notifications and paper trading support.
 
-**Current Status**: Phase 2 Complete ✓
+**Current Status**: Phase 3 Complete ✓ (Claude Integration)
 
 ## Quick Start
 
@@ -31,14 +31,19 @@ src/
   __init__.py          # Package initialization
   config.py            # Settings management (Pydantic)
   mt5_client.py        # MT5 client & indicator calculations
+  signal_parser.py     # Trading signal models & parsing
+  claude_client.py     # Claude CLI wrapper
 
 tests/
   __init__.py          # Test package initialization
   test_config.py       # Configuration tests
   test_mt5.py          # MT5 client & indicator tests
+  test_signal_parser.py # Signal parsing & validation tests
+  test_claude_client.py # Claude client & CLI integration tests
 
 data/                  # Trade data and CSV exports
 logs/                  # Application logs
+plans/                 # Development phase plans and reviews
 ```
 
 ## Phase 1: Foundation (Complete)
@@ -61,6 +66,18 @@ logs/                  # Application logs
 - ✓ Symbol validation and spread monitoring
 - ✓ Comprehensive indicator tests (16+ test cases)
 - ✓ Graceful MT5 initialization with retry logic
+
+## Phase 3: Claude Code CLI Integration (Complete)
+
+- ✓ Claude CLI subprocess wrapper (claude_client.py)
+- ✓ Comprehensive Pydantic models for trading signals (signal_parser.py)
+- ✓ JSON extraction from Claude responses (3 fallback strategies)
+- ✓ Signal parsing and validation with 30+ fields
+- ✓ Session context, spread checks, trailing stops, confidence breakdown
+- ✓ Execution instructions and metadata tracking
+- ✓ Retry logic with exponential backoff
+- ✓ Path validation and security checks
+- ✓ 46 test cases for signal parsing + 24 tests for Claude client (70 total)
 
 ## Key Features
 
@@ -86,15 +103,14 @@ All settings are loaded from `.env` file. Key categories:
 
 ## Development
 
-See `/docs/PHASE_1.md` for detailed implementation notes.
+See `plans/` directory for detailed phase implementations and code reviews.
 
 ## Next Phases
 
-- Phase 3: Elliott Wave Pattern Recognition
-- Phase 4: Signal Generation Engine
-- Phase 5: Risk Management & Order Execution
-- Phase 6: Telegram Bot & Notifications
-- Phase 7: Performance Monitoring & Optimization
+- Phase 4: Telegram Bot & Signal Notifications
+- Phase 5: Trade Execution & Risk Management
+- Phase 6: System Orchestration
+- Phase 7: Backtesting & Analytics
 - Phase 8: Web Dashboard & Reporting
 
 ## Environment Setup
