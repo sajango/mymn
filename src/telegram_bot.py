@@ -1,0 +1,406 @@
+"""Telegram bot for trading signal notifications with inline buttons."""
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Callable, Optional
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import NetworkError, TelegramError
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
+
+from src.config import get_settings
+from src.signal_parser import TradingSignal, SignalAction
+
+logger = logging.getLogger(__name__)
+
+
+class TradingBot:
+    """Telegram bot for trading signal notifications.
+
+    Handles:
+    - Signal notifications with inline buttons (Execute/Skip/Modify)
+    - Signal expiration after configurable timeout
+    - Bot commands (/start, /status, /help)
+    - Callback handling for user actions
+
+    Security:
+    - Only responds to configured chat_id (single user)
+    - Bot token loaded from environment only
+    """
+
+    def __init__(self):
+        self.app: Optional[Application] = None
+        self.pending_signals: dict[int, dict] = {}  # message_id -> signal data
+        self._on_execute: Optional[Callable] = None
+        self._on_modify: Optional[Callable] = None
+        self._settings = get_settings()
+        self._background_tasks: set = set()  # Track expiration tasks
+
+    def _is_authorized(self, update: Update) -> bool:
+        """Check if update is from authorized chat."""
+        if not update.effective_chat:
+            return False
+        return str(update.effective_chat.id) == self._settings.telegram_chat_id
+
+    def set_execute_callback(self, callback: Callable):
+        """Set callback for Execute button."""
+        self._on_execute = callback
+
+    def set_modify_callback(self, callback: Callable):
+        """Set callback for Modify button."""
+        self._on_modify = callback
+
+    async def initialize(self):
+        """Initialize and start the bot application."""
+        self.app = (
+            Application.builder()
+            .token(self._settings.telegram_bot_token)
+            .build()
+        )
+
+        # Add command handlers
+        self.app.add_handler(CommandHandler("start", self._handle_start))
+        self.app.add_handler(CommandHandler("status", self._handle_status))
+        self.app.add_handler(CommandHandler("help", self._handle_help))
+        self.app.add_handler(CommandHandler("positions", self._handle_positions))
+
+        # Add callback handler for inline buttons
+        self.app.add_handler(CallbackQueryHandler(self._handle_callback))
+
+        await self.app.initialize()
+        await self.app.start()
+        await self.app.updater.start_polling()
+
+        logger.info("Telegram bot started")
+
+    async def shutdown(self):
+        """Shutdown the bot gracefully."""
+        # Cancel all background expiration tasks
+        for task in self._background_tasks:
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            self._background_tasks.clear()
+
+        if self.app:
+            await self.app.updater.stop()
+            await self.app.stop()
+            await self.app.shutdown()
+            logger.info("Telegram bot stopped")
+
+    @staticmethod
+    def _escape_markdown(text: str) -> str:
+        """Escape special Markdown characters in text."""
+        escape_chars = ['_', '*', '[', ']', '`']
+        for char in escape_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
+
+    def format_signal_message(self, signal: TradingSignal) -> str:
+        """Format trading signal as Telegram message with Markdown."""
+        s = signal.signal
+
+        if s.action == SignalAction.NO_TRADE:
+            reason = s.reason or "Unclear wave structure"
+            return (
+                f"*NO TRADE SIGNAL*\n\n"
+                f"*{signal.symbol}*\n"
+                f"{signal.timestamp[:16].replace('T', ' ')}\n\n"
+                f"Reason: {reason}\n"
+                f"Confidence: {s.confidence}%"
+            )
+
+        if s.action == SignalAction.WAIT:
+            details = s.details or "Waiting for better setup"
+            return (
+                f"*WAIT SIGNAL*\n\n"
+                f"*{signal.symbol}*\n"
+                f"{signal.timestamp[:16].replace('T', ' ')}\n\n"
+                f"Details: {details}\n"
+                f"Confidence: {s.confidence}%"
+            )
+
+        # BUY or SELL signal
+        emoji = "BUY" if signal.is_buy else "SELL"
+        arrow = "UP" if signal.is_buy else "DOWN"
+
+        # Format take profits
+        tp_lines = ""
+        if s.take_profit:
+            for tp in s.take_profit:
+                tp_lines += f"  - {tp.level}: {tp.price:.2f} ({tp.close_percent}%)\n"
+
+        # Wave analysis section (escape user-facing text)
+        wave_info = ""
+        if signal.wave_analysis:
+            wa = signal.wave_analysis
+            inv_price = f"{wa.invalidation_price:.2f}" if wa.invalidation_price else "N/A"
+            h4_trend = self._escape_markdown(wa.h4_trend)
+            current_wave = self._escape_markdown(wa.current_wave)
+            wave_info = (
+                f"\n*Wave Analysis*\n"
+                f"  H4 Trend: {h4_trend}\n"
+                f"  Current: {current_wave}\n"
+                f"  Invalidation: {inv_price}\n"
+            )
+
+        # Confidence breakdown if available
+        conf_info = ""
+        if signal.confidence_breakdown:
+            cb = signal.confidence_breakdown
+            conf_info = f"\n*Confidence Breakdown*\n  Base: {cb.base_score}"
+            if cb.timeframe_alignment:
+                conf_info += f" +{cb.timeframe_alignment} TF"
+            if cb.fibonacci_confluence:
+                conf_info += f" +{cb.fibonacci_confluence} Fib"
+            if cb.session_bonus:
+                conf_info += f" {cb.session_bonus:+d} Session"
+            if cb.penalties:
+                conf_info += f" {cb.penalties} Penalties"
+            conf_info += f"\n  Total: {cb.total}%\n"
+
+        entry = s.entry_price or 0
+        sl = s.stop_loss or 0
+        sl_atr = f"{s.stop_loss_atr:.2f}" if s.stop_loss_atr else "N/A"
+        rr = s.risk_reward or 0
+        timeout_mins = self._settings.signal_timeout // 60
+
+        return (
+            f"*{emoji} SIGNAL* {arrow}\n\n"
+            f"*{signal.symbol}*\n"
+            f"{signal.timestamp[:16].replace('T', ' ')}\n\n"
+            f"*Entry*: {entry:.2f}\n"
+            f"*Stop Loss*: {sl:.2f}\n"
+            f"*ATR SL*: {sl_atr}\n\n"
+            f"*Take Profits*:\n{tp_lines}"
+            f"*R:R*: {rr:.2f}\n"
+            f"*Confidence*: {s.confidence}%\n"
+            f"{wave_info}{conf_info}"
+            f"_Expires in {timeout_mins} minutes_"
+        )
+
+    def get_signal_keyboard(self) -> InlineKeyboardMarkup:
+        """Create inline keyboard for signal actions."""
+        keyboard = [
+            [
+                InlineKeyboardButton("Execute", callback_data="execute"),
+                InlineKeyboardButton("Skip", callback_data="skip"),
+            ],
+            [
+                InlineKeyboardButton("Modify", callback_data="modify"),
+            ],
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    async def send_signal(self, signal: TradingSignal) -> Optional[int]:
+        """Send signal notification with action buttons.
+
+        Args:
+            signal: Trading signal to send
+
+        Returns:
+            Message ID if sent successfully, None otherwise
+        """
+        if not self.app:
+            logger.error("Bot not initialized")
+            return None
+
+        text = self.format_signal_message(signal)
+        keyboard = self.get_signal_keyboard()
+
+        try:
+            message = await self.app.bot.send_message(
+                chat_id=self._settings.telegram_chat_id,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+
+            # Store pending signal with expiration
+            expires_at = datetime.now(timezone.utc).timestamp() + self._settings.signal_timeout
+            self.pending_signals[message.message_id] = {
+                "signal": signal,
+                "expires": expires_at,
+            }
+
+            # Schedule expiration task with tracking
+            task = asyncio.create_task(
+                self._expire_signal(message.message_id, self._settings.signal_timeout)
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+            logger.info(f"Signal sent: message_id={message.message_id}")
+            return message.message_id
+
+        except NetworkError as e:
+            logger.error(f"Network error sending signal: {e}")
+            return None
+        except TelegramError as e:
+            logger.error(f"Telegram error sending signal: {e}")
+            return None
+
+    async def _expire_signal(self, message_id: int, timeout: int):
+        """Expire signal after timeout period."""
+        await asyncio.sleep(timeout)
+
+        if message_id in self.pending_signals:
+            del self.pending_signals[message_id]
+
+            try:
+                await self.app.bot.edit_message_text(
+                    chat_id=self._settings.telegram_chat_id,
+                    message_id=message_id,
+                    text="*Signal Expired*\n\n_No action taken (timeout)_",
+                    parse_mode="Markdown",
+                )
+                logger.info(f"Signal expired: message_id={message_id}")
+            except TelegramError:
+                pass  # Message may have been deleted
+
+    async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command."""
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized /start from {update.effective_chat.id}")
+            return
+
+        symbol = self._settings.mt5_symbol
+        await update.message.reply_text(
+            f"*Elliott Wave Trading Bot*\n\n"
+            f"Trading signals for {symbol}.\n\n"
+            f"Commands:\n"
+            f"/status - System status\n"
+            f"/positions - Active positions\n"
+            f"/help - Help message",
+            parse_mode="Markdown",
+        )
+
+    async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /status command."""
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized /status from {update.effective_chat.id}")
+            return
+
+        pending = len(self.pending_signals)
+        mode = "Paper" if self._settings.paper_trading else "Live"
+        symbol = self._settings.mt5_symbol
+
+        await update.message.reply_text(
+            f"*System Status*\n\n"
+            f"Mode: {mode}\n"
+            f"Symbol: {symbol}\n"
+            f"Pending signals: {pending}\n"
+            f"Bot: Running",
+            parse_mode="Markdown",
+        )
+
+    async def _handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command."""
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized /help from {update.effective_chat.id}")
+            return
+        await self._handle_start(update, context)
+
+    async def _handle_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /positions command."""
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized /positions from {update.effective_chat.id}")
+            return
+
+        # Placeholder - will be implemented in Phase 5
+        await update.message.reply_text(
+            "*Active Positions*\n\n_Position tracking not yet implemented_",
+            parse_mode="Markdown",
+        )
+
+    async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline button callbacks."""
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized callback from {update.effective_chat.id}")
+            return
+
+        query = update.callback_query
+        await query.answer()
+
+        message_id = query.message.message_id
+        signal_data = self.pending_signals.get(message_id)
+
+        if signal_data is None:
+            await query.edit_message_text("Signal expired or already processed")
+            return
+
+        signal = signal_data["signal"]
+        action = query.data
+
+        if action == "execute":
+            del self.pending_signals[message_id]
+
+            if self._on_execute:
+                try:
+                    result = await self._on_execute(signal)
+                    status = "Executed" if result else "Execution Failed"
+                except Exception as e:
+                    logger.error(f"Execute callback error: {e}")
+                    status = "Execution Error"
+            else:
+                status = "Executed (paper mode)"
+
+            await query.edit_message_text(
+                f"*{status}*\n\n"
+                f"Action: {signal.signal.action.value}\n"
+                f"Entry: {signal.signal.entry_price}",
+                parse_mode="Markdown",
+            )
+            logger.info(f"Signal executed: {signal.signal.action}")
+
+        elif action == "skip":
+            del self.pending_signals[message_id]
+            await query.edit_message_text("*Signal Skipped*", parse_mode="Markdown")
+            logger.info("Signal skipped by user")
+
+        elif action == "modify":
+            await query.edit_message_text(
+                "*Modify Signal*\n\n"
+                "Send modifications:\n"
+                "`sl=3310 tp1=3380`\n\n"
+                "_Modification not yet implemented_",
+                parse_mode="Markdown",
+            )
+
+    async def send_message(self, text: str, parse_mode: str = "Markdown"):
+        """Send a simple message to the configured chat."""
+        if not self.app:
+            logger.error("Bot not initialized")
+            return
+
+        try:
+            await self.app.bot.send_message(
+                chat_id=self._settings.telegram_chat_id,
+                text=text,
+                parse_mode=parse_mode,
+            )
+        except TelegramError as e:
+            logger.error(f"Error sending message: {e}")
+
+    async def send_alert(self, title: str, message: str):
+        """Send an alert message (for errors, warnings)."""
+        text = f"*{title}*\n\n{message}"
+        await self.send_message(text)
+
+
+# Lazy singleton instance
+_trading_bot: Optional[TradingBot] = None
+
+
+def get_trading_bot() -> TradingBot:
+    """Get or create the trading bot singleton."""
+    global _trading_bot
+    if _trading_bot is None:
+        _trading_bot = TradingBot()
+    return _trading_bot

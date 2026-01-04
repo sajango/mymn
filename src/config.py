@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     )
     log_path: str = Field(default="logs/trading.log", description="Log file path")
 
+    # Signal Settings
+    signal_timeout: int = Field(
+        default=300, ge=60, le=600, description="Signal expiration timeout in seconds"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""
