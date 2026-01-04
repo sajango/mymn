@@ -7,7 +7,7 @@
 
 ## Overview
 - **Priority**: P1
-- **Status**: Pending
+- **Status**: Done
 - **Effort**: 3h
 - **Description**: ForexFactory calendar scraping for news blackout detection
 
@@ -275,23 +275,23 @@ beautifulsoup4>=4.12.0
 
 ## Todo List
 
-- [ ] Create src/news_calendar.py with NewsCalendar class
-- [ ] Add beautifulsoup4 to requirements.txt
-- [ ] Implement ForexFactory scraper
-- [ ] Implement caching mechanism (1h refresh)
-- [ ] Implement blackout period detection
-- [ ] Add logging for blackout triggers
-- [ ] Write tests with mocked responses
-- [ ] Test with live ForexFactory data
-- [ ] Integrate with phase-06 orchestrator
+- [x] Create src/news_calendar.py with NewsCalendar class
+- [x] Add beautifulsoup4 to requirements.txt
+- [x] Implement ForexFactory scraper
+- [x] Implement caching mechanism (1h refresh)
+- [x] Implement blackout period detection
+- [x] Add logging for blackout triggers
+- [x] Write tests with mocked responses (37 test cases)
+- [x] Test with live ForexFactory data
+- [x] Integrate with phase-06 orchestrator
 
 ## Success Criteria
 
-- [ ] Calendar scraping works without blocking
-- [ ] High-impact USD events correctly identified
-- [ ] Blackout detection returns correct window
-- [ ] Cache prevents excessive requests
-- [ ] Failure falls back to "no blackout" safely
+- [x] Calendar scraping works without blocking
+- [x] High-impact USD events correctly identified
+- [x] Blackout detection returns correct window
+- [x] Cache prevents excessive requests
+- [x] Failure falls back to "no blackout" safely
 
 ## Risk Assessment
 

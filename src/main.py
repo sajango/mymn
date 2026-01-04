@@ -20,6 +20,7 @@ from src.claude_client import claude_client
 from src.config import get_settings
 from src.database import SignalStatus, get_database
 from src.mt5_client import mt5_client
+from src.news_calendar import get_news_calendar
 from src.scheduler import (
     create_scheduler,
     get_m15_trigger,
@@ -73,6 +74,7 @@ class TradingOrchestrator:
         self._trailing_manager = None
         self._session_detector = None
         self._spread_checker = None
+        self._news_calendar = None
 
     @property
     def db(self):
@@ -115,6 +117,13 @@ class TradingOrchestrator:
         if self._spread_checker is None:
             self._spread_checker = get_spread_checker()
         return self._spread_checker
+
+    @property
+    def news_calendar(self):
+        """Lazy load news calendar."""
+        if self._news_calendar is None:
+            self._news_calendar = get_news_calendar()
+        return self._news_calendar
 
     async def initialize(self) -> bool:
         """Initialize all system components.
@@ -178,14 +187,15 @@ class TradingOrchestrator:
         """Main analysis job - runs every M15.
 
         Flow:
-        1. Check market open
-        2. Check session quality
-        3. Check spread
-        4. Export CSV data
-        5. Run Claude analysis
-        6. Apply session modifier to confidence
-        7. Check confidence threshold
-        8. Send notification or skip
+        1. Check news blackout
+        2. Check market open
+        3. Check session quality
+        4. Check spread
+        5. Export CSV data
+        6. Run Claude analysis
+        7. Apply session modifier to confidence
+        8. Check confidence threshold
+        9. Send notification or skip
         """
         config = get_settings()
         symbol = config.mt5_symbol
@@ -203,12 +213,22 @@ class TradingOrchestrator:
         loop = asyncio.get_event_loop()
 
         try:
-            # 1. Check market open
+            # 1. Check news blackout
+            blackout = self.news_calendar.is_in_blackout()
+            if blackout.in_blackout:
+                logger.info(f"News blackout active: {blackout.message}")
+                self.db.save_skipped_signal(
+                    reason="news_blackout",
+                    details=blackout.message,
+                )
+                return
+
+            # 2. Check market open
             if not self.session_detector.is_market_open():
                 logger.info("Market closed - skipping analysis")
                 return
 
-            # 2. Check MT5 connection
+            # 3. Check MT5 connection
             connected = await loop.run_in_executor(
                 executor, mt5_client.is_connected
             )
