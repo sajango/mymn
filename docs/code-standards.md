@@ -1,8 +1,8 @@
 # Code Standards & Guidelines
 
-**Last Updated**: 2026-01-04
+**Last Updated**: 2026-01-05
 **Project**: MT5 Elliott Wave Trading System
-**Phase**: 7 Complete (Testing Infrastructure)
+**Phase**: 9 (RiskGuard Phase 1 Configuration)
 
 ## Table of Contents
 
@@ -15,7 +15,8 @@
 7. [Testing Standards](#testing-standards)
 8. [Performance Guidelines](#performance-guidelines)
 9. [Security Guidelines](#security-guidelines)
-10. [Code Review Checklist](#code-review-checklist)
+10. [Configuration Management](#configuration-management)
+11. [Code Review Checklist](#code-review-checklist)
 
 ---
 
@@ -945,6 +946,133 @@ def calc_pos_size(s, e, sl):  # Missing type hints, vague names
 
 ---
 
+## Configuration Management
+
+### Overview
+
+Configuration is managed via `src/config.py` using Pydantic Settings with environment variable loading from `.env`. All settings are validated on initialization with type checking and range constraints.
+
+### Configuration Structure
+
+**Settings Location**: `src/config.py`
+**Environment File**: `.env` (copy from `.env.example`)
+**Singleton Access**: `from src.config import get_settings; config = get_settings()`
+
+### RiskGuard Phase 1 Settings
+
+The RiskGuard module implements multi-layer position management with 5 core settings:
+
+#### 1. Max Concurrent Positions
+```python
+MAX_CONCURRENT_POSITIONS: int = 2  # (range: 1-10)
+```
+- **Purpose**: Limits open positions simultaneously
+- **Default**: 2 positions max
+- **Use Case**: Prevent over-exposure when signals overlap
+- **Impact**: Rejects new signals when limit reached
+
+#### 2. Max Total Lots
+```python
+MAX_TOTAL_LOTS: float = 0.2  # (range: 0.01-5.0)
+```
+- **Purpose**: Cap total lot exposure across all positions
+- **Default**: 0.2 lots maximum
+- **Use Case**: Account-wide leverage protection
+- **Impact**: Scales down position size if total exceeds limit
+
+#### 3. Max Account Risk Percent
+```python
+MAX_ACCOUNT_RISK_PERCENT: float = 3.0  # (range: 0.5-10.0)
+```
+- **Purpose**: Absolute max account risk across all positions
+- **Default**: 3% of account balance
+- **Use Case**: Risk-of-ruin prevention
+- **Impact**: Blocks trade if total risk exceeds threshold
+
+#### 4. Opposite Position Policy
+```python
+OPPOSITE_POSITION_POLICY: Literal["reject", "close_first", "hedge"] = "close_first"
+```
+- **Purpose**: Handle signals opposite to existing positions
+- **Options**:
+  - `"reject"`: Skip opposite signal, log warning
+  - `"close_first"`: Close existing, execute new signal
+  - `"hedge"`: Allow both positions simultaneously (advanced)
+- **Default**: `"close_first"` (safe default)
+- **Use Case**: Conflict resolution strategy
+
+#### 5. Duplicate Cooldown Minutes
+```python
+DUPLICATE_COOLDOWN_MINUTES: int = 15  # (range: 1-120)
+```
+- **Purpose**: Prevent duplicate signal spam
+- **Default**: 15-minute cooldown between same signals
+- **Use Case**: Avoid redundant entries on same symbol
+- **Impact**: Blocks duplicate signals within window
+
+### Configuration Validation Rules
+
+| Setting | Min | Max | Validation |
+|---------|-----|-----|-----------|
+| `max_concurrent_positions` | 1 | 10 | ≥1 required |
+| `max_total_lots` | 0.01 | 5.0 | Must be positive |
+| `max_account_risk_percent` | 0.5 | 10.0 | Percentage bounds |
+| `opposite_position_policy` | - | - | Enum: reject\|close_first\|hedge |
+| `duplicate_cooldown_minutes` | 1 | 120 | Minutes integer |
+
+### Loading Configuration
+
+```python
+# Automatic on import (singleton pattern)
+from src.config import get_settings
+config = get_settings()
+
+# Access RiskGuard settings
+max_positions = config.max_concurrent_positions
+max_risk = config.max_account_risk_percent
+policy = config.opposite_position_policy
+
+# Validate in trading logic
+if current_positions >= config.max_concurrent_positions:
+    logger.warning("Position limit reached, skipping signal")
+```
+
+### Environment Variable Naming
+
+All settings use uppercase with underscores in `.env`:
+
+```bash
+# RiskGuard Settings
+MAX_CONCURRENT_POSITIONS=2
+MAX_TOTAL_LOTS=0.2
+MAX_ACCOUNT_RISK_PERCENT=3.0
+OPPOSITE_POSITION_POLICY=close_first
+DUPLICATE_COOLDOWN_MINUTES=15
+```
+
+### Integration Points
+
+**Core Trading Module** (`trade_executor.py`):
+- Checks `max_concurrent_positions` before executing
+- Validates total risk vs `max_account_risk_percent`
+- Applies `opposite_position_policy` logic
+- Enforces `duplicate_cooldown_minutes` window
+
+**Risk Management**:
+- RiskGuard enforces settings before order submission
+- Position sizing respects `max_total_lots` constraint
+- Multi-layer validation prevents account blow-up
+
+### Best Practices
+
+1. **Conservative Defaults**: Start with safe values, increase after validation
+2. **Account-Appropriate**: Adjust based on account size and risk tolerance
+3. **Testing First**: Validate with paper trading before live
+4. **Gradual Increase**: Increase exposure only after proving profitability
+5. **Documentation**: Document reasoning for custom values in team notes
+
+---
+
 ## Summary
 
 Adhering to these standards ensures:
@@ -956,6 +1084,6 @@ Adhering to these standards ensures:
 
 ---
 
-**Document Version**: 1.0
-**Last Updated**: 2026-01-04
+**Document Version**: 1.1
+**Last Updated**: 2026-01-05
 **Next Review**: After Phase 6

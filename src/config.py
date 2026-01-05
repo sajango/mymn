@@ -129,6 +129,24 @@ class Settings(BaseSettings):
         default=5, ge=1, le=20, description="Maximum auto-trades per day"
     )
 
+    # Risk Guard Settings
+    max_concurrent_positions: int = Field(
+        default=2, ge=1, le=10, description="Maximum concurrent open positions"
+    )
+    max_total_lots: float = Field(
+        default=0.2, ge=0.01, le=5.0, description="Maximum total lot exposure"
+    )
+    max_account_risk_percent: float = Field(
+        default=3.0, ge=0.5, le=10.0, description="Maximum account risk percentage"
+    )
+    opposite_position_policy: Literal["reject", "close_first", "hedge"] = Field(
+        default="close_first",
+        description="Policy for handling opposite direction signals",
+    )
+    duplicate_cooldown_minutes: int = Field(
+        default=15, ge=1, le=120, description="Minutes to block duplicate signals"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""
