@@ -35,15 +35,22 @@ from src.trade_executor import get_trade_executor
 from src.trailing_stop_manager import get_trailing_manager
 from src.reports import get_weekly_reporter
 
-# Configure logging
+# Configure logging with UTF-8 support for emoji handling on Windows
 settings = get_settings()
+_log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Create handlers with proper encoding for Windows compatibility
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(logging.Formatter(_log_format))
+_stream_handler.stream = open(1, "w", encoding="utf-8", errors="replace", closefd=False)
+
+_file_handler = logging.FileHandler(settings.log_file, encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter(_log_format))
+
 logging.basicConfig(
     level=getattr(logging, settings.log_level),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(settings.log_file),
-    ],
+    format=_log_format,
+    handlers=[_stream_handler, _file_handler],
 )
 logger = logging.getLogger(__name__)
 
@@ -60,6 +67,7 @@ class TradingOrchestrator:
     - TP monitoring jobs (30s)
     - Trade execution callbacks
     - Circuit breaker for failures
+    - Auto-trade execution for high-confidence signals
     """
 
     def __init__(self):
@@ -69,6 +77,8 @@ class TradingOrchestrator:
         self._max_failures = 5
         self._tp_monitor_failures = 0
         self._max_tp_failures = 3
+        self._daily_auto_trades = 0
+        self._last_trade_date = None
 
         # Component references (lazy loaded)
         self._db = None
@@ -135,6 +145,39 @@ class TradingOrchestrator:
         if self._weekly_reporter is None:
             self._weekly_reporter = get_weekly_reporter()
         return self._weekly_reporter
+
+    def _reset_daily_counter_if_needed(self):
+        """Reset daily auto-trade counter at midnight."""
+        from datetime import date
+        today = date.today()
+        if self._last_trade_date != today:
+            self._daily_auto_trades = 0
+            self._last_trade_date = today
+            logger.debug("Daily auto-trade counter reset")
+
+    def _can_auto_trade(self, confidence: int) -> tuple[bool, str]:
+        """Check if auto-trading conditions are met.
+
+        Args:
+            confidence: Signal confidence percentage
+
+        Returns:
+            Tuple of (can_trade, reason)
+        """
+        config = get_settings()
+
+        if not config.auto_trade_enabled:
+            return False, "auto_trade_disabled"
+
+        self._reset_daily_counter_if_needed()
+
+        if self._daily_auto_trades >= config.auto_trade_max_daily:
+            return False, f"daily_limit_reached ({config.auto_trade_max_daily})"
+
+        if confidence < config.auto_trade_confidence:
+            return False, f"confidence_below_threshold ({confidence}% < {config.auto_trade_confidence}%)"
+
+        return True, "conditions_met"
 
     async def initialize(self) -> bool:
         """Initialize all system components.
@@ -319,9 +362,41 @@ class TradingOrchestrator:
                 self.db.update_signal_status(signal_id, SignalStatus.SKIPPED)
                 return
 
-            # 11. Send notification with inline buttons
-            self.bot.pending_signals_meta = {"signal_id": signal_id}
-            await self.bot.send_signal(signal)
+            # 11. Check auto-trade conditions
+            can_auto, auto_reason = self._can_auto_trade(adjusted_conf)
+
+            if can_auto:
+                # Auto-execute trade
+                logger.info(f"Auto-executing trade: confidence={adjusted_conf}%")
+                result = await self.trade_executor.execute_signal(signal)
+
+                if result.get("status") == "executed":
+                    self._daily_auto_trades += 1
+                    await self.bot.send_message(
+                        f"*AUTO-TRADE Executed*\n\n"
+                        f"Action: {signal.signal.action.value}\n"
+                        f"Confidence: {adjusted_conf}%\n"
+                        f"Volume: {result.get('volume')} lots\n"
+                        f"Entry: {result.get('entry_price')}\n"
+                        f"SL: {result.get('stop_loss')}\n"
+                        f"TP1: {result.get('take_profit')}\n"
+                        f"Daily trades: {self._daily_auto_trades}/{config.auto_trade_max_daily}"
+                    )
+                    logger.info(f"Auto-trade executed: ticket={result.get('ticket')}")
+                else:
+                    await self.bot.send_message(
+                        f"*AUTO-TRADE Failed*\n\n"
+                        f"Reason: {result.get('reason', 'unknown')}\n"
+                        f"Signal sent for manual review."
+                    )
+                    # Fall back to manual - send notification
+                    self.bot.pending_signals_meta = {"signal_id": signal_id}
+                    await self.bot.send_signal(signal)
+            else:
+                # Manual mode - send notification with inline buttons
+                logger.info(f"Manual mode: {auto_reason}")
+                self.bot.pending_signals_meta = {"signal_id": signal_id}
+                await self.bot.send_signal(signal)
 
             # Reset failure counter on success
             self._consecutive_failures = 0

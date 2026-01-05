@@ -416,6 +416,35 @@ class MT5Client:
         )
         return lot_size
 
+    def _get_filling_mode(self, symbol: str) -> int:
+        """Get supported filling mode for symbol.
+
+        MT5 brokers support different filling modes. Query symbol info
+        to determine which mode to use.
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            Appropriate ORDER_FILLING_* constant
+        """
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            logger.warning(f"Cannot get symbol info for {symbol}, defaulting to FOK")
+            return mt5.ORDER_FILLING_FOK
+
+        filling_mode = symbol_info.filling_mode
+
+        # Check supported modes (filling_mode is a bitmask)
+        # SYMBOL_FILLING_FOK = 1, SYMBOL_FILLING_IOC = 2
+        if filling_mode & 1:  # FOK supported
+            return mt5.ORDER_FILLING_FOK
+        elif filling_mode & 2:  # IOC supported
+            return mt5.ORDER_FILLING_IOC
+        else:
+            # Fallback to RETURN for brokers that don't specify
+            return mt5.ORDER_FILLING_RETURN
+
     def place_market_order(
         self,
         symbol: str,
@@ -454,6 +483,7 @@ class MT5Client:
 
         mt5_type = mt5.ORDER_TYPE_BUY if order_type == "BUY" else mt5.ORDER_TYPE_SELL
         price = tick.ask if order_type == "BUY" else tick.bid
+        filling_mode = self._get_filling_mode(symbol)
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -467,7 +497,7 @@ class MT5Client:
             "magic": magic,
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,
         }
 
         # Retry on requote
@@ -630,6 +660,8 @@ class MT5Client:
         close_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
         price = tick.bid if pos.type == 0 else tick.ask
 
+        filling_mode = self._get_filling_mode(pos.symbol)
+
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "position": ticket,
@@ -639,7 +671,7 @@ class MT5Client:
             "price": price,
             "deviation": self.config.max_slippage,
             "magic": pos.magic,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": filling_mode,
         }
 
         result = mt5.order_send(request)

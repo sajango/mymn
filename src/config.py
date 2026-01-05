@@ -110,6 +110,17 @@ class Settings(BaseSettings):
         default=300, ge=60, le=600, description="Signal expiration timeout in seconds"
     )
 
+    # Auto-Trading Settings
+    auto_trade_enabled: bool = Field(
+        default=False, description="Enable automatic trade execution"
+    )
+    auto_trade_confidence: int = Field(
+        default=75, ge=50, le=100, description="Minimum confidence for auto-execution"
+    )
+    auto_trade_max_daily: int = Field(
+        default=5, ge=1, le=20, description="Maximum auto-trades per day"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""
