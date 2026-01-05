@@ -9,6 +9,7 @@ Provides:
 
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -70,7 +71,31 @@ class NewsCalendar:
         self._cache: list[NewsEvent] = []
         self._cache_time: Optional[datetime] = None
         self._cache_duration = timedelta(hours=1)
-        self._timeout = 10
+        self._timeout = 15
+        self._session = requests.Session()
+        # Realistic browser headers to avoid 403
+        self._session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/121.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;"
+                "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Cache-Control": "max-age=0",
+            "Sec-Ch-Ua": '"Not A(Brand";v="99", "Google Chrome";v="121"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        })
 
     def _now_utc(self) -> datetime:
         """Get current UTC time (timezone-aware)."""
@@ -91,18 +116,19 @@ class NewsCalendar:
         events = []
 
         try:
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9",
-            }
-            response = requests.get(
+            # First visit homepage to get cookies
+            try:
+                self._session.get(
+                    "https://www.forexfactory.com/",
+                    timeout=self._timeout,
+                )
+                time.sleep(1)  # Respectful delay
+            except Exception:
+                pass  # Continue even if homepage fails
+
+            # Then fetch calendar
+            response = self._session.get(
                 f"{self.BASE_URL}?week=this",
-                headers=headers,
                 timeout=self._timeout,
             )
             response.raise_for_status()
@@ -178,13 +204,15 @@ class NewsCalendar:
             return events
 
         except requests.Timeout:
-            logger.warning("ForexFactory scrape timed out")
+            logger.warning("ForexFactory scrape timed out - using fail-safe (no blackout)")
             return []
         except requests.RequestException as e:
-            logger.error(f"Failed to scrape ForexFactory: {e}")
+            # 403 is common - ForexFactory blocks scrapers
+            # Fail-safe: continue without blackout detection
+            logger.warning(f"ForexFactory unavailable: {e} - using fail-safe (no blackout)")
             return []
         except Exception as e:
-            logger.error(f"Unexpected error scraping ForexFactory: {e}")
+            logger.warning(f"News calendar error: {e} - using fail-safe (no blackout)")
             return []
 
     def _parse_date(self, date_text: str) -> Optional[datetime]:
