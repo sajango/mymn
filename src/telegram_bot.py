@@ -447,6 +447,10 @@ class TradingBot:
             report = engine.generate_full_report()
             suggestions = engine.get_optimization_suggestions()
 
+            # Save to files (JSON + CSV)
+            saved = engine.save_to_files()
+            logger.info(f"[ANALYTICS] Saved files: {list(saved.keys())}")
+
             logger.info("[ANALYTICS] Report generated, formatting messages...")
 
             # Format sections

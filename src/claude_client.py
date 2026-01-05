@@ -1,7 +1,9 @@
 """Claude Code CLI wrapper for Elliott Wave analysis."""
 
 import csv
+import json
 import logging
+import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -58,7 +60,7 @@ def _log_csv_file_info(tf: str, path: Path) -> dict:
             if rows and len(rows[0]) > 0:
                 first_date = rows[0][0] if rows else None
                 last_date = rows[-1][0] if rows else None
-                info["date_range"] = f"{first_date} → {last_date}"
+                info["date_range"] = f"{first_date} -> {last_date}"
 
         logger.info(
             f"[CSV:{tf}] Loaded {path.name}: "
@@ -167,20 +169,23 @@ class ClaudeClient:
         Returns:
             True if CLI is available
         """
+        claude_path = shutil.which("claude")
+        if not claude_path:
+            logger.error("Claude CLI not found in PATH")
+            return False
+
         try:
             result = subprocess.run(
-                ["claude", "--version"],
+                [claude_path, "--version"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # Explicit UTF-8 for Windows compatibility
                 timeout=10,
             )
             if result.returncode == 0:
                 logger.info(f"Claude CLI version: {result.stdout.strip()}")
                 return True
             logger.error(f"Claude CLI check failed: {result.stderr}")
-            return False
-        except FileNotFoundError:
-            logger.error("Claude CLI not found in PATH")
             return False
         except subprocess.TimeoutExpired:
             logger.error("Claude CLI version check timed out")
@@ -228,9 +233,15 @@ class ClaudeClient:
 
         Raises:
             ValueError: If any file path is invalid or suspicious
+            FileNotFoundError: If Claude CLI is not found in PATH
         """
+        # Use shutil.which to find full path (required on Windows)
+        claude_path = shutil.which("claude")
+        if not claude_path:
+            raise FileNotFoundError("Claude CLI not found in PATH")
+
         cmd = [
-            "claude",
+            claude_path,
             "--print",  # Non-interactive, output only
             "--dangerously-skip-permissions",  # Skip permission prompts (needed for automation)
             "-p", prompt,
@@ -274,6 +285,7 @@ class ClaudeClient:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # Explicit UTF-8 for Windows compatibility
                 timeout=self.timeout,
             )
 
@@ -443,7 +455,83 @@ class ClaudeClient:
         logger.info(f"[ANALYSIS] Completed in {elapsed:.1f}s")
         logger.info("=" * 60)
 
+        # Save analysis to file
+        self._save_analysis(response, signal, csv_metadata, elapsed)
+
         return signal
+
+    def _save_analysis(
+        self,
+        raw_response: str,
+        signal: TradingSignal,
+        csv_metadata: dict,
+        elapsed_seconds: float,
+    ) -> Optional[Path]:
+        """Save analysis result to JSON file.
+
+        Args:
+            raw_response: Raw Claude CLI response
+            signal: Parsed trading signal
+            csv_metadata: Metadata about CSV files used
+            elapsed_seconds: Analysis duration
+
+        Returns:
+            Path to saved file or None on error
+        """
+        output_dir = Path(__file__).parent.parent / "data" / "analyses"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filepath = output_dir / f"analysis_{timestamp}.json"
+
+        try:
+            # Build analysis record
+            record = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "elapsed_seconds": round(elapsed_seconds, 2),
+                "csv_files": {
+                    tf: {
+                        "path": info.get("path"),
+                        "rows": info.get("row_count"),
+                        "date_range": info.get("date_range"),
+                    }
+                    for tf, info in csv_metadata.items()
+                },
+                "raw_response": raw_response,
+                "parsed_signal": {
+                    "symbol": signal.symbol,
+                    "is_tradeable": signal.is_tradeable,
+                    "action": signal.signal.action,
+                    "confidence": signal.signal.confidence,
+                    "entry_price": signal.signal.entry_price,
+                    "stop_loss": signal.signal.stop_loss,
+                    "reason": signal.signal.reason,
+                    "take_profit": [
+                        {"level": tp.level, "price": tp.price}
+                        for tp in (signal.signal.take_profit or [])
+                    ],
+                    "risk_reward": signal.signal.risk_reward,
+                },
+            }
+
+            # Add wave analysis if available
+            if signal.wave_analysis:
+                wave = signal.wave_analysis
+                record["wave_analysis"] = {
+                    "degree": wave.primary_wave.degree,
+                    "position": wave.primary_wave.current_position,
+                    "direction": wave.primary_wave.direction,
+                }
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(record, f, indent=2, default=str)
+
+            logger.info(f"[ANALYSIS] Saved to: {filepath}")
+            return filepath
+
+        except Exception as e:
+            logger.error(f"[ANALYSIS] Failed to save analysis: {e}")
+            return None
 
 
 # Singleton instance

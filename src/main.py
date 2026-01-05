@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from src.claude_client import claude_client
+from src.analytics import get_analytics_engine
 from src.config import get_settings
 from src.database import SignalStatus, get_database
 from src.mt5_client import mt5_client
@@ -379,6 +380,11 @@ class TradingOrchestrator:
         try:
             logger.info("Generating weekly report...")
             report = self.weekly_reporter.generate_weekly_report()
+
+            # Save to files (JSON + CSV)
+            engine = get_analytics_engine()
+            saved = engine.save_to_files()
+            logger.info(f"Weekly report saved to: {list(saved.keys())}")
 
             # Extract key metrics for notification
             overall = report.get("overall_metrics", {})

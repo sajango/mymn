@@ -118,7 +118,7 @@ class TestBuildCommand:
 
         cmd = client._build_command(prompt, csv_files)
 
-        assert "claude" in cmd
+        assert "claude" in cmd[0].lower()  # Full path contains "claude"
         assert "--print" in cmd
         assert "-p" in cmd
         assert prompt in cmd

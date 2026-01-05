@@ -8,10 +8,13 @@ Calculates:
 - Indicator effectiveness metrics
 """
 
+import csv
+import json
 import logging
 import math
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from src.config import get_settings
@@ -485,6 +488,54 @@ class AnalyticsEngine:
             )
 
         return suggestions
+
+    def save_to_files(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        output_dir: Optional[Path] = None,
+    ) -> dict[str, Path]:
+        """Save analytics report to JSON and trades to CSV.
+
+        Args:
+            start_date: Optional start date filter
+            end_date: Optional end date filter
+            output_dir: Output directory (defaults to data/analytics)
+
+        Returns:
+            Dict with paths to saved files
+        """
+        if output_dir is None:
+            output_dir = Path(__file__).parent.parent / "data" / "analytics"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        saved_files = {}
+
+        # Save full report as JSON
+        report = self.generate_full_report(start_date, end_date)
+        report["suggestions"] = self.get_optimization_suggestions()
+
+        json_path = output_dir / f"analytics_{timestamp}.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, default=str)
+        saved_files["json"] = json_path
+        logger.info(f"[ANALYTICS] Saved JSON report: {json_path}")
+
+        # Save trades as CSV
+        trades = self.db.get_closed_trades(start_date, end_date)
+        if trades:
+            csv_path = output_dir / f"trades_{timestamp}.csv"
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=trades[0].keys())
+                writer.writeheader()
+                writer.writerows(trades)
+            saved_files["csv"] = csv_path
+            logger.info(f"[ANALYTICS] Saved {len(trades)} trades to CSV: {csv_path}")
+        else:
+            logger.info("[ANALYTICS] No trades to export to CSV")
+
+        return saved_files
 
 
 # Lazy singleton
