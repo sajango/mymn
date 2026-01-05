@@ -1,8 +1,10 @@
 """Claude Code CLI wrapper for Elliott Wave analysis."""
 
+import csv
 import logging
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +16,59 @@ from src.signal_parser import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _log_csv_file_info(tf: str, path: Path) -> dict:
+    """Log detailed CSV file information.
+
+    Args:
+        tf: Timeframe label (H4, H1, M30, M15)
+        path: Path to CSV file
+
+    Returns:
+        Dict with file metadata
+    """
+    info = {
+        "timeframe": tf,
+        "path": str(path),
+        "exists": path.exists(),
+        "size_bytes": 0,
+        "row_count": 0,
+        "columns": [],
+        "date_range": None,
+    }
+
+    if not path.exists():
+        logger.warning(f"[CSV:{tf}] File not found: {path}")
+        return info
+
+    info["size_bytes"] = path.stat().st_size
+    size_kb = info["size_bytes"] / 1024
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            headers = next(reader, [])
+            info["columns"] = headers
+
+            rows = list(reader)
+            info["row_count"] = len(rows)
+
+            # Extract date range from first column (typically datetime)
+            if rows and len(rows[0]) > 0:
+                first_date = rows[0][0] if rows else None
+                last_date = rows[-1][0] if rows else None
+                info["date_range"] = f"{first_date} → {last_date}"
+
+        logger.info(
+            f"[CSV:{tf}] Loaded {path.name}: "
+            f"{info['row_count']} rows, {size_kb:.1f}KB, "
+            f"columns={len(headers)}, range={info['date_range']}"
+        )
+    except Exception as e:
+        logger.error(f"[CSV:{tf}] Failed to read {path}: {e}")
+
+    return info
 
 # Default paths
 DEFAULT_INSTRUCTIONS_PATH = Path(__file__).parent.parent / "instructions_v2.md"
@@ -207,7 +262,12 @@ class ClaudeClient:
             ClaudeTimeoutError: If command times out
             ClaudeClientError: If command fails
         """
-        logger.debug(f"Running: {' '.join(cmd[:5])}...")
+        # Log full command (mask sensitive parts if any)
+        cmd_display = " ".join(cmd)
+        logger.info(f"[CLI] Executing Claude Code CLI...")
+        logger.debug(f"[CLI] Full command: {cmd_display}")
+
+        start_time = time.time()
 
         try:
             result = subprocess.run(
@@ -217,14 +277,31 @@ class ClaudeClient:
                 timeout=self.timeout,
             )
 
+            elapsed = time.time() - start_time
+            response_len = len(result.stdout) if result.stdout else 0
+
             if result.returncode != 0:
-                logger.error(f"CLI error (code {result.returncode}): {result.stderr}")
+                logger.error(
+                    f"[CLI] Error (code={result.returncode}, elapsed={elapsed:.1f}s): "
+                    f"{result.stderr[:500]}"
+                )
                 raise ClaudeClientError(f"CLI failed: {result.stderr[:200]}")
+
+            logger.info(
+                f"[CLI] Success: returncode=0, elapsed={elapsed:.1f}s, "
+                f"response_length={response_len} chars"
+            )
+
+            # Log response preview (first 500 chars for debugging)
+            if result.stdout:
+                preview = result.stdout[:500].replace("\n", " ")
+                logger.debug(f"[CLI] Response preview: {preview}...")
 
             return result.stdout
 
         except subprocess.TimeoutExpired:
-            logger.error(f"CLI timed out after {self.timeout}s")
+            elapsed = time.time() - start_time
+            logger.error(f"[CLI] Timeout after {elapsed:.1f}s (limit={self.timeout}s)")
             raise ClaudeTimeoutError(f"CLI timed out after {self.timeout}s")
 
     def _retry_with_backoff(
@@ -262,42 +339,109 @@ class ClaudeClient:
         Returns:
             TradingSignal with analysis results or NO_TRADE on failure
         """
+        analysis_start = time.time()
+        logger.info("=" * 60)
+        logger.info("[ANALYSIS] Starting Elliott Wave analysis...")
+        logger.info(f"[ANALYSIS] Timestamp: {datetime.utcnow().isoformat()}Z")
+
         # Validate inputs
         if not csv_files:
-            logger.error("No CSV files provided")
+            logger.error("[ANALYSIS] No CSV files provided")
             return create_no_trade_signal("no_data", "No CSV files provided")
+
+        # Log CSV file details
+        logger.info(f"[ANALYSIS] Processing {len(csv_files)} CSV files...")
+        csv_metadata = {}
+        total_rows = 0
+        total_size = 0
+
+        for tf in ["H4", "H1", "M30", "M15"]:
+            if tf in csv_files:
+                info = _log_csv_file_info(tf, csv_files[tf])
+                csv_metadata[tf] = info
+                total_rows += info["row_count"]
+                total_size += info["size_bytes"]
+
+        logger.info(
+            f"[ANALYSIS] Total data: {total_rows} rows, "
+            f"{total_size / 1024:.1f}KB across {len(csv_files)} files"
+        )
 
         missing = [tf for tf in ["H4", "H1", "M30", "M15"] if tf not in csv_files]
         if missing:
-            logger.warning(f"Missing timeframes: {missing}")
+            logger.warning(f"[ANALYSIS] Missing timeframes: {missing}")
 
         for tf, path in csv_files.items():
             if not path.exists():
-                logger.error(f"CSV file not found: {path}")
+                logger.error(f"[ANALYSIS] CSV file not found: {path}")
                 return create_no_trade_signal("file_not_found", f"Missing: {path}")
 
         # Check instructions file
         if not self.instructions_path.exists():
-            logger.error(f"Instructions not found: {self.instructions_path}")
+            logger.error(f"[ANALYSIS] Instructions not found: {self.instructions_path}")
             return create_no_trade_signal(
                 "config_error", f"Instructions missing: {self.instructions_path}"
             )
 
+        logger.info(f"[ANALYSIS] Instructions: {self.instructions_path}")
+
         # Run analysis with retry
         response = self._retry_with_backoff(csv_files)
         if response is None:
+            logger.error("[ANALYSIS] Claude CLI failed after all retries")
             return create_no_trade_signal(
                 "cli_failed", "Claude CLI failed after retries"
             )
 
         # Parse response
+        logger.info("[ANALYSIS] Parsing Claude response...")
         signal = parse_trading_signal(response)
+
         if signal is None:
-            logger.error("Failed to parse signal from response")
-            # Note: Not logging response content to protect strategy details
+            logger.error("[ANALYSIS] Failed to parse signal from response")
+            logger.debug(f"[ANALYSIS] Raw response (first 1000 chars): {response[:1000]}")
             return create_no_trade_signal(
                 "parse_failed", "Could not parse JSON from CLI response"
             )
+
+        # Log parsed signal details
+        elapsed = time.time() - analysis_start
+        sig = signal.signal
+        logger.info("[ANALYSIS] Successfully parsed trading signal!")
+        logger.info(
+            f"[SIGNAL] Action: {sig.action} | Confidence: {sig.confidence}% | "
+            f"Symbol: {signal.symbol}"
+        )
+
+        if signal.is_tradeable:
+            # Log entry and stop loss
+            logger.info(
+                f"[SIGNAL] Entry: {sig.entry_price} | SL: {sig.stop_loss}"
+            )
+
+            # Log take profit levels
+            if sig.take_profit:
+                tp_str = " | ".join(
+                    f"{tp.level}={tp.price}" for tp in sig.take_profit
+                )
+                logger.info(f"[SIGNAL] Take Profits: {tp_str}")
+
+            # Log risk:reward if available
+            if sig.risk_reward:
+                logger.info(f"[SIGNAL] Risk:Reward = {sig.risk_reward:.2f}")
+
+            # Log wave analysis if available
+            if signal.wave_analysis:
+                wave = signal.wave_analysis
+                logger.info(
+                    f"[SIGNAL] Wave: degree={wave.primary_wave.degree}, "
+                    f"position={wave.primary_wave.current_position}"
+                )
+        else:
+            logger.info(f"[SIGNAL] No trade - Reason: {sig.reason}")
+
+        logger.info(f"[ANALYSIS] Completed in {elapsed:.1f}s")
+        logger.info("=" * 60)
 
         return signal
 

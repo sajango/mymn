@@ -3,14 +3,21 @@
 Provides statistical calculations for trading performance metrics.
 """
 
+import logging
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
-from dashboard.backend.services.database import get_db
+from services.database import get_db
+
+logger = logging.getLogger(__name__)
 
 
 def get_overall_stats() -> dict[str, Any]:
     """Get overall trading statistics."""
+    start_time = time.time()
+    logger.info("[STATS] Calculating overall trading statistics...")
+
     with get_db() as conn:
         # Total closed trades
         total = conn.execute(
@@ -18,6 +25,7 @@ def get_overall_stats() -> dict[str, Any]:
         ).fetchone()[0]
 
         if total == 0:
+            logger.info("[STATS] No closed trades found, returning zeros")
             return {
                 "total_trades": 0,
                 "wins": 0,
@@ -60,7 +68,7 @@ def get_overall_stats() -> dict[str, Any]:
 
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
 
-        return {
+        result = {
             "total_trades": total,
             "wins": wins,
             "losses": losses,
@@ -72,9 +80,21 @@ def get_overall_stats() -> dict[str, Any]:
             "profit_factor": round(profit_factor, 2),
         }
 
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[STATS] Overall stats: trades={total}, wins={wins}, losses={losses}, "
+            f"win_rate={result['win_rate']}%, pnl=${result['total_pnl']:.2f}, "
+            f"profit_factor={profit_factor:.2f} (elapsed={elapsed:.3f}s)"
+        )
+
+        return result
+
 
 def get_equity_curve() -> list[dict]:
     """Get equity curve data (cumulative P&L over time)."""
+    start_time = time.time()
+    logger.info("[EQUITY] Fetching equity curve data...")
+
     with get_db() as conn:
         rows = conn.execute("""
             SELECT
@@ -86,7 +106,7 @@ def get_equity_curve() -> list[dict]:
             ORDER BY close_time
         """).fetchall()
 
-        return [
+        result = [
             {
                 "time": row["close_time"],
                 "profit": round(row["profit"], 2),
@@ -95,9 +115,23 @@ def get_equity_curve() -> list[dict]:
             for row in rows
         ]
 
+        elapsed = time.time() - start_time
+        if result:
+            logger.info(
+                f"[EQUITY] Returned {len(result)} data points, "
+                f"final equity=${result[-1]['equity']:.2f} (elapsed={elapsed:.3f}s)"
+            )
+        else:
+            logger.info(f"[EQUITY] No equity data available (elapsed={elapsed:.3f}s)")
+
+        return result
+
 
 def get_daily_pnl(days: int = 30) -> list[dict]:
     """Get daily P&L for the last N days."""
+    start_time = time.time()
+    logger.info(f"[DAILY_PNL] Fetching daily P&L for last {days} days...")
+
     with get_db() as conn:
         rows = conn.execute("""
             SELECT
@@ -111,7 +145,7 @@ def get_daily_pnl(days: int = 30) -> list[dict]:
             ORDER BY date
         """, (f"-{days}",)).fetchall()
 
-        return [
+        result = [
             {
                 "date": row["date"],
                 "pnl": round(row["daily_pnl"], 2),
@@ -120,9 +154,22 @@ def get_daily_pnl(days: int = 30) -> list[dict]:
             for row in rows
         ]
 
+        elapsed = time.time() - start_time
+        total_pnl = sum(r["pnl"] for r in result)
+        total_trades = sum(r["trades"] for r in result)
+        logger.info(
+            f"[DAILY_PNL] Returned {len(result)} days, "
+            f"total_pnl=${total_pnl:.2f}, total_trades={total_trades} (elapsed={elapsed:.3f}s)"
+        )
+
+        return result
+
 
 def get_confidence_analysis() -> list[dict]:
     """Analyze signal confidence vs actual outcome."""
+    start_time = time.time()
+    logger.info("[CONFIDENCE] Analyzing signal confidence vs outcomes...")
+
     with get_db() as conn:
         rows = conn.execute("""
             SELECT
@@ -147,7 +194,7 @@ def get_confidence_analysis() -> list[dict]:
                 END
         """).fetchall()
 
-        return [
+        result = [
             {
                 "band": row["confidence_band"],
                 "total": row["total"],
@@ -159,9 +206,22 @@ def get_confidence_analysis() -> list[dict]:
             for row in rows
         ]
 
+        elapsed = time.time() - start_time
+        for r in result:
+            logger.info(
+                f"[CONFIDENCE] {r['band']}: {r['total']} trades, "
+                f"win_rate={r['win_rate']}%, profit=${r['total_profit']:.2f}"
+            )
+        logger.info(f"[CONFIDENCE] Analysis completed (elapsed={elapsed:.3f}s)")
+
+        return result
+
 
 def get_time_analysis() -> dict:
     """Analyze performance by hour and day of week."""
+    start_time = time.time()
+    logger.info("[TIME_ANALYSIS] Analyzing performance by hour and day...")
+
     with get_db() as conn:
         # By hour
         hour_rows = conn.execute("""
@@ -191,7 +251,7 @@ def get_time_analysis() -> dict:
 
         day_names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-        return {
+        result = {
             "by_hour": [
                 {
                     "hour": int(row["hour"]),
@@ -212,9 +272,28 @@ def get_time_analysis() -> dict:
             ],
         }
 
+        elapsed = time.time() - start_time
+        logger.info(
+            f"[TIME_ANALYSIS] By hour: {len(result['by_hour'])} hours analyzed, "
+            f"By day: {len(result['by_day'])} days analyzed (elapsed={elapsed:.3f}s)"
+        )
+
+        # Log best performing times
+        if result["by_hour"]:
+            best_hour = max(result["by_hour"], key=lambda x: x["pnl"])
+            logger.info(f"[TIME_ANALYSIS] Best hour: {best_hour['hour']}:00 UTC (pnl=${best_hour['pnl']:.2f})")
+        if result["by_day"]:
+            best_day = max(result["by_day"], key=lambda x: x["pnl"])
+            logger.info(f"[TIME_ANALYSIS] Best day: {best_day['day']} (pnl=${best_day['pnl']:.2f})")
+
+        return result
+
 
 def get_open_positions() -> list[dict]:
     """Get currently open positions."""
+    start_time = time.time()
+    logger.info("[POSITIONS] Fetching open positions...")
+
     with get_db() as conn:
         rows = conn.execute("""
             SELECT
@@ -227,4 +306,18 @@ def get_open_positions() -> list[dict]:
             ORDER BY t.open_time DESC
         """).fetchall()
 
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+
+        elapsed = time.time() - start_time
+        if result:
+            for pos in result:
+                logger.info(
+                    f"[POSITIONS] Open: id={pos.get('id')}, "
+                    f"action={pos.get('action')}, volume={pos.get('volume')}, "
+                    f"entry={pos.get('entry_price')}, confidence={pos.get('confidence')}%"
+                )
+        else:
+            logger.info("[POSITIONS] No open positions found")
+
+        logger.info(f"[POSITIONS] Returned {len(result)} positions (elapsed={elapsed:.3f}s)")
+        return result

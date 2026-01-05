@@ -1,9 +1,12 @@
 """Analytics API endpoints for charts."""
 
+import logging
 from fastapi import APIRouter, Query
 
-from dashboard.backend.services.analytics import get_daily_pnl, get_equity_curve
-from dashboard.backend.services.database import get_db
+from services.analytics import get_daily_pnl, get_equity_curve
+from services.database import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["analytics"])
 
@@ -11,18 +14,25 @@ router = APIRouter(prefix="/api", tags=["analytics"])
 @router.get("/equity")
 def equity_curve():
     """Get equity curve data for line chart."""
-    return get_equity_curve()
+    logger.info("[API] GET /api/equity - Fetching equity curve")
+    result = get_equity_curve()
+    logger.info(f"[API] GET /api/equity - Returned {len(result)} data points")
+    return result
 
 
 @router.get("/daily-pnl")
 def daily_pnl(days: int = Query(30, ge=1, le=365)):
     """Get daily P&L for bar chart."""
-    return get_daily_pnl(days)
+    logger.info(f"[API] GET /api/daily-pnl?days={days} - Fetching daily P&L")
+    result = get_daily_pnl(days)
+    logger.info(f"[API] GET /api/daily-pnl - Returned {len(result)} days")
+    return result
 
 
 @router.get("/skipped-signals")
 def skipped_signals(days: int = Query(7, ge=1, le=90)):
     """Get summary of skipped signals by reason."""
+    logger.info(f"[API] GET /api/skipped-signals?days={days} - Fetching skipped signals")
     with get_db() as conn:
         rows = conn.execute("""
             SELECT
@@ -36,7 +46,7 @@ def skipped_signals(days: int = Query(7, ge=1, le=90)):
             ORDER BY count DESC
         """, (f"-{days}",)).fetchall()
 
-        return [
+        result = [
             {
                 "reason": row["reason"],
                 "count": row["count"],
@@ -46,10 +56,18 @@ def skipped_signals(days: int = Query(7, ge=1, le=90)):
             for row in rows
         ]
 
+        total_skipped = sum(r["count"] for r in result)
+        logger.info(f"[API] GET /api/skipped-signals - Found {total_skipped} skipped signals across {len(result)} reasons")
+        for r in result:
+            logger.debug(f"[SKIPPED] {r['reason']}: {r['count']} signals")
+
+        return result
+
 
 @router.get("/weekly-summary")
 def weekly_summary():
     """Get week-over-week performance summary."""
+    logger.info("[API] GET /api/weekly-summary - Fetching weekly performance")
     with get_db() as conn:
         rows = conn.execute("""
             SELECT
@@ -64,7 +82,7 @@ def weekly_summary():
             LIMIT 12
         """).fetchall()
 
-        return [
+        result = [
             {
                 "week": row["week"],
                 "trades": row["trades"],
@@ -74,3 +92,12 @@ def weekly_summary():
             }
             for row in rows
         ]
+
+        logger.info(f"[API] GET /api/weekly-summary - Returned {len(result)} weeks")
+        for r in result:
+            logger.debug(
+                f"[WEEKLY] {r['week']}: {r['trades']} trades, "
+                f"win_rate={r['win_rate']}%, pnl=${r['pnl']:.2f}"
+            )
+
+        return result

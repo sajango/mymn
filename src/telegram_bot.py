@@ -16,6 +16,7 @@ from telegram.ext import (
 
 from src.config import get_settings
 from src.signal_parser import TradingSignal, SignalAction
+from src.analytics import get_analytics_engine
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +70,16 @@ class TradingBot:
         self.app.add_handler(CommandHandler("status", self._handle_status))
         self.app.add_handler(CommandHandler("help", self._handle_help))
         self.app.add_handler(CommandHandler("positions", self._handle_positions))
+        self.app.add_handler(CommandHandler("analytics", self._handle_analytics))
 
         # Add callback handler for inline buttons
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
 
         await self.app.initialize()
         await self.app.start()
-        await self.app.updater.start_polling()
+        # drop_pending_updates=True clears stale updates from previous instances
+        # This prevents "terminated by other getUpdates request" conflicts
+        await self.app.updater.start_polling(drop_pending_updates=True)
 
         logger.info("Telegram bot started")
 
@@ -277,6 +281,7 @@ class TradingBot:
             f"Commands:\n"
             f"/status - System status\n"
             f"/positions - Active positions\n"
+            f"/analytics - Performance report\n"
             f"/help - Help message",
             parse_mode="Markdown",
         )
@@ -342,6 +347,129 @@ class TradingBot:
             )
 
         await update.message.reply_text(text, parse_mode="Markdown")
+
+    async def _handle_analytics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /analytics command - send performance report."""
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized /analytics from {update.effective_chat.id}")
+            return
+
+        logger.info("[ANALYTICS] Generating analytics report for Telegram...")
+        await self.send_analytics_report()
+
+    def _format_overall_stats(self, metrics: dict) -> str:
+        """Format overall trading statistics for Telegram."""
+        if metrics.get("total_trades", 0) == 0:
+            return "*Overall Stats*\n\n_No trades yet_"
+
+        return (
+            f"*Overall Stats*\n\n"
+            f"Trades: {metrics['total_trades']} "
+            f"({metrics['winning_trades']}W / {metrics['losing_trades']}L)\n"
+            f"Win Rate: {metrics['win_rate']}%\n"
+            f"Profit Factor: {metrics['profit_factor']}\n"
+            f"Return: {metrics['total_return_percent']}%\n"
+            f"Max Drawdown: {metrics['max_drawdown_percent']}%\n"
+            f"Sharpe Ratio: {metrics['sharpe_ratio']}\n"
+            f"Avg R:R: {metrics['average_rr_achieved']}"
+        )
+
+    def _format_confidence_breakdown(self, data: dict) -> str:
+        """Format confidence level breakdown for Telegram."""
+        if not data:
+            return "*Confidence Analysis*\n\n_No data_"
+
+        lines = ["*Confidence Analysis*\n"]
+        labels = {
+            "75_plus": "High (75+)",
+            "60_to_74": "Medium (60-74)",
+            "below_60": "Low (<60)",
+        }
+
+        for key, label in labels.items():
+            if key in data:
+                d = data[key]
+                if d["count"] > 0:
+                    lines.append(
+                        f"{label}: {d['count']} trades, "
+                        f"{d['win_rate']}% win, ${d['total_profit']:.0f}"
+                    )
+
+        return "\n".join(lines) if len(lines) > 1 else "*Confidence Analysis*\n\n_No data_"
+
+    def _format_session_analysis(self, data: dict) -> str:
+        """Format session performance breakdown for Telegram."""
+        if not data:
+            return "*Session Analysis*\n\n_No data_"
+
+        lines = ["*Session Analysis*\n"]
+        labels = {
+            "london_ny_overlap": "London/NY Overlap",
+            "london": "London",
+            "new_york": "New York",
+            "asian": "Asian",
+        }
+
+        for key, label in labels.items():
+            if key in data:
+                d = data[key]
+                if d["count"] > 0:
+                    lines.append(
+                        f"{label}: {d['count']} trades, "
+                        f"{d['win_rate']}% win, ${d['total_profit']:.0f}"
+                    )
+
+        return "\n".join(lines) if len(lines) > 1 else "*Session Analysis*\n\n_No data_"
+
+    def _format_suggestions(self, suggestions: list) -> str:
+        """Format optimization suggestions for Telegram."""
+        if not suggestions:
+            return ""
+
+        lines = ["*Suggestions*\n"]
+        for s in suggestions[:5]:  # Limit to 5
+            lines.append(f"- {s}")
+
+        return "\n".join(lines)
+
+    async def send_analytics_report(self):
+        """Send analytics report to Telegram.
+
+        Callable method for manual /analytics command and scheduled reports.
+        Sends overall stats, confidence breakdown, session analysis, and suggestions.
+        """
+        if not self.app:
+            logger.error("Bot not initialized")
+            return
+
+        try:
+            engine = get_analytics_engine()
+            report = engine.generate_full_report()
+            suggestions = engine.get_optimization_suggestions()
+
+            logger.info("[ANALYTICS] Report generated, formatting messages...")
+
+            # Format sections
+            stats_msg = self._format_overall_stats(report.get("overall_metrics", {}))
+            conf_msg = self._format_confidence_breakdown(report.get("by_confidence_level", {}))
+            session_msg = self._format_session_analysis(report.get("by_session", {}))
+            suggest_msg = self._format_suggestions(suggestions)
+
+            # Combine into single message (under 4096 chars)
+            full_msg = f"{stats_msg}\n\n{conf_msg}\n\n{session_msg}"
+            if suggest_msg:
+                full_msg += f"\n\n{suggest_msg}"
+
+            # Add timestamp
+            generated = report.get("generated_at", "")[:16].replace("T", " ")
+            full_msg += f"\n\n_Generated: {generated}_"
+
+            await self.send_message(full_msg)
+            logger.info("[ANALYTICS] Report sent successfully")
+
+        except Exception as e:
+            logger.error(f"[ANALYTICS] Failed to generate report: {e}")
+            await self.send_message("*Analytics Error*\n\n_Failed to generate report_")
 
     async def _handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline button callbacks."""
