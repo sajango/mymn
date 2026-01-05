@@ -2,12 +2,12 @@
 
 import gc
 from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.database import Database, SignalStatus
+from src.risk_guard import RiskCheckResult
 from src.signal_parser import (
     Signal,
     SignalAction,
@@ -50,9 +50,19 @@ def mock_settings():
 
 
 @pytest.fixture
-def executor(mock_mt5, temp_db, mock_settings):
+def mock_risk_guard():
+    """Create mock risk guard that passes all checks."""
+    mock = MagicMock()
+    mock.validate = AsyncMock(return_value=RiskCheckResult(passed=True))
+    return mock
+
+
+@pytest.fixture
+def executor(mock_mt5, temp_db, mock_settings, mock_risk_guard):
     """Create executor with mocks."""
-    return TradeExecutor(mt5=mock_mt5, db=temp_db, settings=mock_settings)
+    return TradeExecutor(
+        mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard
+    )
 
 
 @pytest.fixture

@@ -14,6 +14,7 @@ from typing import Optional
 from src.config import get_settings
 from src.database import Database, SignalStatus, get_database
 from src.mt5_client import MT5Client, mt5_client
+from src.risk_guard import RiskGuard, get_risk_guard
 from src.signal_parser import SignalAction, TradingSignal
 
 logger = logging.getLogger(__name__)
@@ -38,10 +39,12 @@ class TradeExecutor:
         mt5: Optional[MT5Client] = None,
         db: Optional[Database] = None,
         settings=None,
+        risk_guard: Optional[RiskGuard] = None,
     ):
         self._mt5 = mt5
         self._db = db
         self._settings = settings
+        self._risk_guard = risk_guard
 
     @property
     def mt5(self) -> MT5Client:
@@ -64,6 +67,13 @@ class TradeExecutor:
             self._settings = get_settings()
         return self._settings
 
+    @property
+    def risk_guard(self) -> RiskGuard:
+        """Lazy load risk guard."""
+        if self._risk_guard is None:
+            self._risk_guard = get_risk_guard()
+        return self._risk_guard
+
     async def execute_signal(self, signal: TradingSignal) -> dict:
         """Execute trading signal.
 
@@ -82,11 +92,43 @@ class TradeExecutor:
                 "action": signal.signal.action.value,
             }
 
+        # Risk validation before execution
+        risk_result = await self.risk_guard.validate(signal)
+
+        if not risk_result.passed:
+            logger.warning(
+                f"Trade rejected by RiskGuard: {risk_result.reason.value} - "
+                f"{risk_result.message}"
+            )
+
+            # Save signal as rejected
+            signal_id = self.db.save_signal(signal)
+            self.db.update_signal_status(signal_id, SignalStatus.REJECTED)
+
+            # Log to skipped_signals for analytics
+            self.db.save_skipped_signal(
+                reason=f"risk_guard:{risk_result.reason.value}",
+                details=risk_result.message,
+                confidence=signal.signal.confidence,
+            )
+
+            return {
+                "status": "rejected",
+                "reason": risk_result.reason.value,
+                "message": risk_result.message,
+                "action_taken": risk_result.action_taken,
+            }
+
         # Save signal to database
         signal_id = self.db.save_signal(signal)
 
         try:
             result = await self._execute_order(signal, signal_id)
+
+            # Add risk guard info to result
+            if risk_result.action_taken:
+                result["risk_guard_action"] = risk_result.action_taken
+
             return result
         except Exception as e:
             logger.error(f"Execution failed: {e}")

@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.risk_guard import RiskCheckResult
+
 # Ensure env vars set before imports
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test_token")
 os.environ.setdefault("TELEGRAM_CHAT_ID", "123456")
@@ -88,15 +90,22 @@ class TestSignalToExecutionFlow:
             ),
         )
 
+    @pytest.fixture
+    def mock_risk_guard(self):
+        """Create mock risk guard that passes all checks."""
+        mock = MagicMock()
+        mock.validate = AsyncMock(return_value=RiskCheckResult(passed=True))
+        return mock
+
     @pytest.mark.asyncio
     async def test_full_signal_execution_flow(
-        self, temp_db, mock_mt5, mock_settings, buy_signal
+        self, temp_db, mock_mt5, mock_settings, buy_signal, mock_risk_guard
     ):
         """Test complete flow: signal → execution → db save."""
         from src.trade_executor import TradeExecutor
 
         executor = TradeExecutor(
-            mt5=mock_mt5, db=temp_db, settings=mock_settings
+            mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard
         )
 
         # Execute signal
@@ -120,7 +129,7 @@ class TestSignalToExecutionFlow:
 
     @pytest.mark.asyncio
     async def test_trailing_stop_activation_flow(
-        self, temp_db, mock_mt5, mock_settings, buy_signal
+        self, temp_db, mock_mt5, mock_settings, buy_signal, mock_risk_guard
     ):
         """Test trailing stop activates when TP1 hit."""
         from src.trade_executor import TradeExecutor
@@ -128,7 +137,7 @@ class TestSignalToExecutionFlow:
 
         # Execute trade first
         executor = TradeExecutor(
-            mt5=mock_mt5, db=temp_db, settings=mock_settings
+            mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard
         )
         await executor.execute_signal(buy_signal)
 
@@ -402,6 +411,10 @@ class TestErrorHandling:
 
         settings = Settings(_env_file=None, paper_trading=True)
 
+        # Mock risk guard to pass validation
+        mock_risk_guard = MagicMock()
+        mock_risk_guard.validate = AsyncMock(return_value=RiskCheckResult(passed=True))
+
         signal = TradingSignal(
             timestamp=datetime.now(timezone.utc).isoformat(),
             symbol="XAUUSD",
@@ -416,7 +429,9 @@ class TestErrorHandling:
             ),
         )
 
-        executor = TradeExecutor(mt5=mock_mt5, db=db, settings=settings)
+        executor = TradeExecutor(
+            mt5=mock_mt5, db=db, settings=settings, risk_guard=mock_risk_guard
+        )
         result = await executor.execute_signal(signal)
 
         assert result["status"] == "rejected"
