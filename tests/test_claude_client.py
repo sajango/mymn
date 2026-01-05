@@ -112,18 +112,19 @@ class TestBuildCommand:
         h4_csv = tmp_path / "xauusd_h4.csv"
         h4_csv.write_text("data")
 
+        # Create settings file (simulating what _create_settings_file does)
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text('{"systemPrompt": "test"}')
+
         client = ClaudeClient(instructions_path=instructions)
         csv_files = {"H4": h4_csv}
-        prompt = "test prompt"
 
-        cmd = client._build_command(prompt, csv_files)
+        cmd = client._build_command(csv_files, settings_file)
 
         assert "claude" in cmd[0].lower()  # Full path contains "claude"
         assert "--print" in cmd
-        assert "-p" in cmd
-        assert prompt in cmd
-        assert "--system-prompt" in cmd
-        assert "--add-file" in cmd
+        assert "--settings" in cmd  # Now uses settings file instead of --system-prompt
+        assert "--add-dir" in cmd  # Directory containing CSV files
 
     def test_skips_missing_timeframes(self, tmp_path: Path) -> None:
         """Test skips non-existent CSV files."""
@@ -139,11 +140,11 @@ class TestBuildCommand:
             "H1": tmp_path / "nonexistent.csv",
         }
 
-        cmd = client._build_command("test", csv_files)
+        cmd = client._build_command(csv_files)
 
-        # Should only have one --add-file (for H4)
-        add_file_count = cmd.count("--add-file")
-        assert add_file_count == 1
+        # Should only have one --add-dir (for H4's directory)
+        add_dir_count = cmd.count("--add-dir")
+        assert add_dir_count == 1
 
 
 class TestRunCli:
@@ -158,7 +159,7 @@ class TestRunCli:
         )
 
         client = ClaudeClient()
-        result = client._run_cli(["claude", "--print"])
+        result = client._run_cli(["claude", "--print"], "test prompt")
 
         assert "BUY" in result
 
@@ -171,7 +172,7 @@ class TestRunCli:
 
         client = ClaudeClient(timeout=300)
         with pytest.raises(ClaudeTimeoutError):
-            client._run_cli(["claude", "--print"])
+            client._run_cli(["claude", "--print"], "test prompt")
 
     @patch("src.claude_client.subprocess.run")
     def test_nonzero_exit_raises_error(self, mock_run: MagicMock) -> None:
@@ -183,7 +184,7 @@ class TestRunCli:
 
         client = ClaudeClient()
         with pytest.raises(ClaudeClientError):
-            client._run_cli(["claude", "--print"])
+            client._run_cli(["claude", "--print"], "test prompt")
 
 
 class TestRetryWithBackoff:

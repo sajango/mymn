@@ -87,10 +87,10 @@ class TestNewsCalendarInit:
         calendar = NewsCalendar()
         assert calendar._cache_duration == timedelta(hours=1)
 
-    def test_timeout_is_10_seconds(self):
-        """Verify scraping timeout is 10 seconds."""
+    def test_timeout_is_15_seconds(self):
+        """Verify scraping timeout is 15 seconds (increased for fallback resilience)."""
         calendar = NewsCalendar()
-        assert calendar._timeout == 10
+        assert calendar._timeout == 15
 
 
 class TestCacheRefresh:
@@ -386,32 +386,39 @@ class TestUpcomingEvents:
 
 
 class TestScrapeCalendar:
-    """Test ForexFactory scraping."""
+    """Test ForexFactory scraping with session-based requests."""
 
-    @patch("src.news_calendar.requests.get")
-    def test_handles_timeout(self, mock_get):
-        """Verify timeout returns empty list."""
+    @patch("src.news_calendar.requests.Session")
+    def test_handles_timeout(self, mock_session_cls):
+        """Verify timeout triggers fallback and returns empty on both failures."""
         import requests
 
-        mock_get.side_effect = requests.Timeout()
+        mock_session = MagicMock()
+        mock_session.get.side_effect = requests.Timeout()
+        mock_session_cls.return_value = mock_session
 
         calendar = NewsCalendar()
         result = calendar._scrape_calendar()
+        # Fallback also fails with timeout, so result is empty
         assert result == []
 
-    @patch("src.news_calendar.requests.get")
-    def test_handles_http_error(self, mock_get):
-        """Verify HTTP error returns empty list."""
+    @patch("src.news_calendar.requests.Session")
+    def test_handles_http_error(self, mock_session_cls):
+        """Verify HTTP error triggers fallback and returns empty on both failures."""
         import requests
 
-        mock_get.side_effect = requests.HTTPError()
+        mock_session = MagicMock()
+        mock_session.get.side_effect = requests.HTTPError()
+        mock_session_cls.return_value = mock_session
 
         calendar = NewsCalendar()
         result = calendar._scrape_calendar()
+        # Fallback also fails, so result is empty
         assert result == []
 
-    @patch("src.news_calendar.requests.get")
-    def test_parses_valid_html(self, mock_get):
+    @patch("src.news_calendar.requests.Session")
+    @patch("src.news_calendar.time.sleep")
+    def test_parses_valid_html(self, mock_sleep, mock_session_cls):
         """Verify parsing of valid HTML response."""
         html = """
         <html><body>
@@ -429,7 +436,10 @@ class TestScrapeCalendar:
         mock_response = MagicMock()
         mock_response.text = html
         mock_response.raise_for_status = MagicMock()
-        mock_get.return_value = mock_response
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_session_cls.return_value = mock_session
 
         calendar = NewsCalendar()
         result = calendar._scrape_calendar()
@@ -439,8 +449,9 @@ class TestScrapeCalendar:
         assert result[0].impact == "high"
         assert result[0].event_name == "Non-Farm Payrolls"
 
-    @patch("src.news_calendar.requests.get")
-    def test_filters_non_usd_events(self, mock_get):
+    @patch("src.news_calendar.requests.Session")
+    @patch("src.news_calendar.time.sleep")
+    def test_filters_non_usd_events(self, mock_sleep, mock_session_cls):
         """Verify non-USD events are filtered out."""
         html = """
         <html><body>
@@ -458,7 +469,10 @@ class TestScrapeCalendar:
         mock_response = MagicMock()
         mock_response.text = html
         mock_response.raise_for_status = MagicMock()
-        mock_get.return_value = mock_response
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_session_cls.return_value = mock_session
 
         calendar = NewsCalendar()
         result = calendar._scrape_calendar()

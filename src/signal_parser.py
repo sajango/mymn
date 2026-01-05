@@ -359,6 +359,183 @@ def _extract_json_at_position(text: str, start: int) -> Optional[dict]:
     return None
 
 
+def _extract_signal_from_markdown(response: str) -> Optional[dict]:
+    """Strategy 5: Extract trading signal data from markdown response.
+
+    When Claude ignores JSON instructions and outputs markdown analysis,
+    extract key data and build a valid signal structure.
+
+    Args:
+        response: Markdown-formatted analysis response
+
+    Returns:
+        Dict with signal data or None if extraction fails
+    """
+    # Detect if this is a markdown response (has headers/tables but no JSON)
+    has_markdown_headers = bool(re.search(r"^#{1,3}\s+", response, re.MULTILINE))
+    has_tables = "|" in response and "---" in response
+    has_json_markers = "{" in response and "}" in response
+
+    if not (has_markdown_headers or has_tables) or has_json_markers:
+        return None  # Not a markdown-only response
+
+    logger.info("Attempting Strategy 5: Markdown fallback extraction")
+
+    # Extract signal action
+    action = "NO_TRADE"
+    action_patterns = [
+        r"SIGNAL[:\s]*\**\s*(BUY|SELL|HOLD|WAIT|NEUTRAL|NO[_\s]?TRADE)",
+        r"Signal[:\s]*\**\s*(BUY|SELL|HOLD|WAIT|NEUTRAL|NO[_\s]?TRADE)",
+        r"Bias[:\s]*\**\s*(BULLISH|BEARISH|NEUTRAL)",
+        r"\*\*(BUY|SELL|HOLD|WAIT|NO[_\s]?TRADE)\*\*",
+    ]
+    for pattern in action_patterns:
+        match = re.search(pattern, response, re.IGNORECASE)
+        if match:
+            raw_action = match.group(1).upper().replace(" ", "_")
+            if raw_action in ("HOLD", "WAIT", "NEUTRAL"):
+                action = "NO_TRADE"
+            elif raw_action == "BULLISH":
+                action = "NO_TRADE"  # Bias, not action - need to wait for entry
+            elif raw_action == "BEARISH":
+                action = "NO_TRADE"
+            elif raw_action in ("BUY", "SELL", "NO_TRADE"):
+                action = raw_action
+            break
+
+    # Extract confidence score
+    confidence = 0
+    confidence_patterns = [
+        r"[Cc]onfidence[:\s]*\**\s*(\d{1,3})\s*%",  # Confidence: 65%
+        r"(\d{1,3})\s*%\s*[Cc]onfidence",  # 65% confidence
+        r"[Cc]onfidence\s*\|\s*(\d{1,3})\s*%",  # Confidence | 65%
+        r"\*\*[Cc]onfidence\*\*\s*\|\s*(\d{1,3})\s*%",  # **Confidence** | 65%
+        r"[Cc]onfidence[^\d]*(\d{1,3})\s*%",  # Confidence ... 65%
+        r"(\d{1,3})\s*%.*(?:trend|strong|weak|extended)",  # 65% | Strong trend
+    ]
+    for pattern in confidence_patterns:
+        match = re.search(pattern, response)
+        if match:
+            confidence = min(int(match.group(1)), 100)
+            break
+
+    # Extract current price
+    current_price = None
+    price_patterns = [
+        r"[Cc]urrent\s*[Pp]rice[:\s]*\**\s*([\d,]+\.?\d*)",
+        r"[Cc]lose[:\s]*\**\s*([\d,]+\.?\d*)",
+    ]
+    for pattern in price_patterns:
+        match = re.search(pattern, response)
+        if match:
+            try:
+                current_price = float(match.group(1).replace(",", ""))
+                break
+            except ValueError:
+                continue
+
+    # Extract reason/details from markdown
+    reason = "Markdown analysis - no JSON output"
+    details_patterns = [
+        r"(?:Key\s+)?Observations?[:\s]*(.*?)(?=\n\n|\n---|\n#|\Z)",
+        r"Rationale[:\s]*(.*?)(?=\n\n|\n---|\n#|\Z)",
+        r"Summary[:\s]*(.*?)(?=\n\n|\n---|\n#|\Z)",
+    ]
+    for pattern in details_patterns:
+        match = re.search(pattern, response, re.IGNORECASE | re.DOTALL)
+        if match:
+            details_text = match.group(1).strip()[:500]  # Limit length
+            # Clean up markdown formatting
+            details_text = re.sub(r"\*\*|\n\d+\.\s*", " ", details_text)
+            details_text = re.sub(r"\s+", " ", details_text).strip()
+            if details_text:
+                reason = details_text[:200]
+                break
+
+    # Build signal structure
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    signal_data = {
+        "timestamp": timestamp,
+        "symbol": "XAUUSD",
+        "signal": {
+            "action": action,
+            "confidence": confidence,
+            "reason": "markdown_fallback",
+            "details": reason,
+        },
+    }
+
+    # Add entry price if we have it and action is tradeable
+    if current_price and action in ("BUY", "SELL"):
+        signal_data["signal"]["entry_price"] = current_price
+
+    logger.info(
+        f"Strategy 5 extracted: action={action}, confidence={confidence}, "
+        f"price={current_price}"
+    )
+    return signal_data
+
+
+def _normalize_signal_data(data: dict) -> dict:
+    """Normalize LLM output to match Pydantic schema.
+
+    Handles field name variations and format differences between
+    what the LLM produces and what the schema expects.
+
+    Args:
+        data: Raw JSON dict from LLM
+
+    Returns:
+        Normalized dict matching TradingSignal schema
+    """
+    if not isinstance(data, dict):
+        return data
+
+    # Normalize signal sub-object
+    signal = data.get("signal", {})
+    if isinstance(signal, dict):
+        # Map direction -> action
+        if "direction" in signal and "action" not in signal:
+            signal["action"] = signal.pop("direction")
+            logger.debug("Normalized: direction -> action")
+
+        # Convert confidence from 0-1 float to 0-100 int
+        if "confidence" in signal:
+            conf = signal["confidence"]
+            if isinstance(conf, float) and 0 <= conf <= 1:
+                signal["confidence"] = int(conf * 100)
+                logger.debug(f"Normalized: confidence {conf} -> {signal['confidence']}")
+
+        # Map risk_reward_ratio -> risk_reward
+        if "risk_reward_ratio" in signal and "risk_reward" not in signal:
+            signal["risk_reward"] = signal.pop("risk_reward_ratio")
+            logger.debug("Normalized: risk_reward_ratio -> risk_reward")
+
+        # Convert take_profit_1/2/3 to take_profit array
+        if "take_profit" not in signal or not signal.get("take_profit"):
+            tp_levels = []
+            # Default close percentages: TP1=40%, TP2=35%, TP3=25%
+            close_percents = [40, 35, 25]
+            for i in range(1, 4):
+                tp_key = f"take_profit_{i}"
+                if tp_key in signal:
+                    tp_price = signal.pop(tp_key)
+                    if tp_price is not None:
+                        tp_levels.append({
+                            "level": f"TP{i}",
+                            "price": float(tp_price),
+                            "close_percent": close_percents[i - 1]
+                        })
+            if tp_levels:
+                signal["take_profit"] = tp_levels
+                logger.debug(f"Normalized: take_profit_1/2/3 -> take_profit array ({len(tp_levels)} levels)")
+
+        data["signal"] = signal
+
+    return data
+
+
 def extract_json_from_response(response: str) -> Optional[dict]:
     """Extract JSON from Claude CLI response.
 
@@ -367,6 +544,7 @@ def extract_json_from_response(response: str) -> Optional[dict]:
     2. Generic code block (``` ... ```)
     3. Raw JSON object at start ({ ... })
     4. JSON object anywhere in response (handles prose before JSON)
+    5. Markdown fallback - parse structured data from markdown tables/text
 
     Args:
         response: Raw CLI output string
@@ -427,6 +605,12 @@ def extract_json_from_response(response: str) -> Optional[dict]:
                 logger.debug(f"Extracted JSON via Strategy 4 (found at position {pos})")
                 return result
 
+    # Strategy 5: Markdown fallback - extract data from markdown analysis
+    result = _extract_signal_from_markdown(response)
+    if result:
+        logger.info("Extracted signal via Strategy 5 (markdown fallback)")
+        return result
+
     logger.warning("Failed to extract JSON from response")
     return None
 
@@ -444,6 +628,9 @@ def parse_trading_signal(response: str) -> Optional[TradingSignal]:
     if json_data is None:
         logger.error("Could not extract JSON from response")
         return None
+
+    # Normalize LLM output to match expected schema
+    json_data = _normalize_signal_data(json_data)
 
     try:
         signal = TradingSignal.model_validate(json_data)

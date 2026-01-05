@@ -5,8 +5,8 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from dashboard.backend.services.analytics import get_open_positions
-from dashboard.backend.services.database import get_db
+from services.analytics import get_open_positions
+from services.database import get_db
 
 router = APIRouter(prefix="/api", tags=["trades"])
 

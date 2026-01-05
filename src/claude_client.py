@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -204,29 +205,48 @@ class ClaudeClient:
             Prompt string for analysis
         """
         prompt_parts = [
-            "Analyze the attached XAUUSD price data and generate a trading signal.",
+            "## MANDATORY OUTPUT FORMAT",
             "",
-            "Data files provided:",
+            "You MUST respond with ONLY a JSON code block. NO OTHER TEXT.",
+            "",
+            "```json",
+            '{"timestamp": "...", "symbol": "XAUUSD", "signal": {...}}',
+            "```",
+            "",
+            "VIOLATIONS THAT CAUSE SYSTEM CRASH:",
+            "- ANY text before the ```json block = CRASH",
+            "- ANY markdown headers (##, ###) = CRASH",
+            "- ANY tables (|---|) = CRASH",
+            "- ANY prose or analysis = CRASH",
+            "- ANY text after ```json block closes = CRASH",
+            "",
+            "---",
+            "",
+            "STEP 1: Read these CSV files using the Read tool:",
         ]
 
         for tf, path in sorted(csv_files.items()):
-            prompt_parts.append(f"- {tf}: {path.name}")
+            # Provide full path for Read tool access
+            prompt_parts.append(f"- {tf}: {path}")
 
         prompt_parts.extend([
             "",
-            "Follow the instructions in the system prompt exactly.",
-            "Output ONLY the JSON signal - no explanations or markdown outside the JSON.",
-            "Wrap the JSON in ```json code blocks.",
+            "STEP 2: Analyze the OHLCV data silently using Elliott Wave theory.",
+            "",
+            "STEP 3: Output ONLY ```json {...} ``` - nothing else.",
+            "Your entire response = one JSON code block. Nothing else.",
         ])
 
         return "\n".join(prompt_parts)
 
-    def _build_command(self, prompt: str, csv_files: dict[str, Path]) -> list[str]:
+    def _build_command(
+        self, csv_files: dict[str, Path], settings_file: Optional[Path] = None
+    ) -> list[str]:
         """Build Claude CLI command.
 
         Args:
-            prompt: Analysis prompt
             csv_files: Dict mapping timeframe to CSV file path
+            settings_file: Optional path to settings JSON file with system prompt
 
         Returns:
             Command list for subprocess
@@ -244,27 +264,54 @@ class ClaudeClient:
             claude_path,
             "--print",  # Non-interactive, output only
             "--dangerously-skip-permissions",  # Skip permission prompts (needed for automation)
-            "-p", prompt,
         ]
 
-        # Add instructions as system prompt (validate path first)
-        if self.instructions_path.exists():
-            validated_instructions = self._validate_path(self.instructions_path)
-            cmd.extend(["--system-prompt", str(validated_instructions)])
+        # Use settings file for system prompt (avoids Windows cmd line length limit)
+        if settings_file and settings_file.exists():
+            cmd.extend(["--settings", str(settings_file)])
 
-        # Add CSV files as context (validate each path)
+        # Add CSV directory for tool access (--add-dir grants Read access)
+        csv_dirs = set()
         for tf in ["H4", "H1", "M30", "M15"]:
             if tf in csv_files and csv_files[tf].exists():
                 validated_csv = self._validate_path(csv_files[tf])
-                cmd.extend(["--add-file", str(validated_csv)])
+                csv_dirs.add(validated_csv.parent)
+
+        for csv_dir in csv_dirs:
+            cmd.extend(["--add-dir", str(csv_dir)])
 
         return cmd
 
-    def _run_cli(self, cmd: list[str]) -> str:
+    def _create_settings_file(self, system_prompt: str) -> Path:
+        """Create temporary settings file with system prompt.
+
+        This avoids Windows command line length limits by putting the
+        system prompt in a file rather than passing it as an argument.
+
+        Args:
+            system_prompt: System prompt content
+
+        Returns:
+            Path to temporary settings file
+        """
+        # Create temp file that persists until explicitly deleted
+        fd, temp_path = tempfile.mkstemp(suffix=".json", prefix="claude_settings_")
+        try:
+            settings = {"systemPrompt": system_prompt}
+            with open(fd, "w", encoding="utf-8") as f:
+                json.dump(settings, f)
+            return Path(temp_path)
+        except Exception:
+            # Clean up on error
+            Path(temp_path).unlink(missing_ok=True)
+            raise
+
+    def _run_cli(self, cmd: list[str], prompt: str) -> str:
         """Execute CLI command with timeout.
 
         Args:
             cmd: Command to execute
+            prompt: User prompt to send via stdin (avoids cmd line length limit)
 
         Returns:
             CLI stdout output
@@ -273,16 +320,18 @@ class ClaudeClient:
             ClaudeTimeoutError: If command times out
             ClaudeClientError: If command fails
         """
-        # Log full command (mask sensitive parts if any)
+        # Log command (without stdin content for brevity)
         cmd_display = " ".join(cmd)
-        logger.info(f"[CLI] Executing Claude Code CLI...")
-        logger.debug(f"[CLI] Full command: {cmd_display}")
+        logger.info("[CLI] Executing Claude Code CLI...")
+        logger.debug(f"[CLI] Command: {cmd_display}")
+        logger.debug(f"[CLI] Prompt length: {len(prompt)} chars")
 
         start_time = time.time()
 
         try:
             result = subprocess.run(
                 cmd,
+                input=prompt,  # Send prompt via stdin (avoids cmd line length limit)
                 capture_output=True,
                 text=True,
                 encoding="utf-8",  # Explicit UTF-8 for Windows compatibility
@@ -329,10 +378,20 @@ class ClaudeClient:
             CLI output or None if all retries fail
         """
         prompt = self._build_prompt(csv_files)
-        cmd = self._build_command(prompt, csv_files)
+        settings_file = None
 
         try:
-            return self._run_cli(cmd)
+            # Create settings file with system prompt (avoids Windows cmd line limit)
+            if self.instructions_path.exists():
+                validated_instructions = self._validate_path(self.instructions_path)
+                with open(validated_instructions, "r", encoding="utf-8") as f:
+                    system_prompt_content = f.read()
+                settings_file = self._create_settings_file(system_prompt_content)
+                logger.debug(f"[CLI] Created settings file: {settings_file}")
+
+            cmd = self._build_command(csv_files, settings_file)
+            return self._run_cli(cmd, prompt)
+
         except (ClaudeTimeoutError, ClaudeClientError) as e:
             if attempt < self.max_retries:
                 delay = 2 ** attempt * 5  # 5s, 10s, 20s...
@@ -341,6 +400,15 @@ class ClaudeClient:
                 return self._retry_with_backoff(csv_files, attempt + 1)
             logger.error(f"All retries exhausted: {e}")
             return None
+
+        finally:
+            # Clean up temp settings file
+            if settings_file and settings_file.exists():
+                try:
+                    settings_file.unlink()
+                    logger.debug(f"[CLI] Cleaned up settings file: {settings_file}")
+                except Exception as cleanup_err:
+                    logger.warning(f"[CLI] Failed to clean up settings file: {cleanup_err}")
 
     def analyze(self, csv_files: dict[str, Path]) -> TradingSignal:
         """Run Elliott Wave analysis on CSV data.

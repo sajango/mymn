@@ -10,6 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY . .
 
+# Add app to Python path for imports
+ENV PYTHONPATH=/app
+
 # Database mounted as volume
 ENV DB_PATH=/data/trading.db
 

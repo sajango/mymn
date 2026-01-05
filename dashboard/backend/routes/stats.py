@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from dashboard.backend.services.analytics import (
+from services.analytics import (
     get_confidence_analysis,
     get_overall_stats,
     get_time_analysis,

@@ -14,8 +14,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from dashboard.backend.routes import analytics, stats, trades
-from dashboard.backend.services.database import check_db_exists
+from routes import analytics, stats, trades
+from services.database import check_db_exists
 
 
 # Rate limiter (60 requests per minute per IP)
