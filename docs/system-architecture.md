@@ -594,10 +594,21 @@ CREATE TABLE tp_levels (
     triggered INTEGER DEFAULT 0     -- 1 if TP hit and closed
 );
 
+-- Signal hashes for duplicate detection
+CREATE TABLE signal_hashes (
+    id INTEGER PRIMARY KEY,
+    hash TEXT NOT NULL,             -- MD5 hash of signal content
+    symbol TEXT NOT NULL,           -- Trading symbol
+    action TEXT NOT NULL,           -- "BUY" or "SELL"
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indexes for performance
 CREATE INDEX idx_trades_status ON trades(status);
 CREATE INDEX idx_trades_ticket ON trades(ticket);
 CREATE INDEX idx_signals_status ON signals(status);
+CREATE INDEX idx_signal_hash ON signal_hashes(hash);
+CREATE INDEX idx_signal_hash_created ON signal_hashes(created_at);
 ```
 
 ### Data Flow in Database

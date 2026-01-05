@@ -177,6 +177,24 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_skipped_reason ON skipped_signals(reason)"
             )
 
+            # Signal hashes for duplicate detection
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS signal_hashes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    hash TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_signal_hash ON signal_hashes(hash)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_signal_hash_created ON signal_hashes(created_at)"
+            )
+
             conn.commit()
             logger.info(f"Database initialized: {self.db_path}")
 
@@ -648,6 +666,74 @@ class Database:
             ).fetchall()
 
             return {row["reason"]: row["count"] for row in rows}
+
+    def save_signal_hash(
+        self, hash_value: str, symbol: str, action: str
+    ) -> int:
+        """Save signal hash for duplicate detection.
+
+        Args:
+            hash_value: MD5 hash of signal content
+            symbol: Trading symbol
+            action: Signal action (BUY/SELL)
+
+        Returns:
+            Hash record ID
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO signal_hashes (hash, symbol, action)
+                VALUES (?, ?, ?)
+                """,
+                (hash_value, symbol, action),
+            )
+            hash_id = cursor.lastrowid
+            conn.commit()
+            logger.debug(f"Signal hash saved: {hash_value[:8]}...")
+            return hash_id
+
+    def get_recent_signal_hashes(self, minutes: int = 15) -> set[str]:
+        """Get signal hashes from last N minutes.
+
+        Args:
+            minutes: Lookback window in minutes
+
+        Returns:
+            Set of hash strings
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT hash FROM signal_hashes
+                WHERE created_at >= datetime('now', ? || ' minutes')
+                """,
+                (f"-{minutes}",),
+            ).fetchall()
+            return {row["hash"] for row in rows}
+
+    def cleanup_old_hashes(self, hours: int = 24) -> int:
+        """Remove signal hashes older than N hours.
+
+        Args:
+            hours: Age threshold for cleanup
+
+        Returns:
+            Number of deleted records
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM signal_hashes
+                WHERE created_at < datetime('now', ? || ' hours')
+                """,
+                (f"-{hours}",),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+            if deleted > 0:
+                logger.info(f"Cleaned up {deleted} old signal hashes")
+            return deleted
 
     # Analytics queries for Phase 9
 

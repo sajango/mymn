@@ -471,6 +471,9 @@ class Database:
     def get_trade_by_ticket(ticket: int) -> Optional[dict]
     def get_open_trades() -> list[dict]
     def get_signal_by_id(signal_id: int) -> Optional[dict]
+    def save_signal_hash(hash_value: str, symbol: str, action: str) -> int
+    def get_recent_signal_hashes(minutes: int = 15) -> set[str]
+    def cleanup_old_hashes(hours: int = 24) -> int
 ```
 
 #### Methods
@@ -595,6 +598,77 @@ Get all open trades from database.
 open_trades = db.get_open_trades()
 for trade in open_trades:
     print(f"Ticket {trade['ticket']}: {trade['symbol']}")
+```
+
+---
+
+##### `save_signal_hash(hash_value: str, symbol: str, action: str) -> int`
+Store signal hash for duplicate detection.
+
+**Parameters**:
+- `hash_value` (str): MD5 hash of signal content
+- `symbol` (str): Trading symbol (e.g., "EURUSD")
+- `action` (str): Signal action ("BUY" or "SELL")
+
+**Returns**: Hash record ID (auto-incremented)
+
+**Database Impact**:
+- Inserts into `signal_hashes` table with current timestamp
+
+**Purpose**: Prevents processing of identical signals within a time window (default 15 minutes)
+
+**Example**:
+```python
+import hashlib
+signal_content = "EURUSD_BUY_1.0850_1.0820"
+hash_val = hashlib.md5(signal_content.encode()).hexdigest()
+hash_id = db.save_signal_hash(hash_val, "EURUSD", "BUY")
+```
+
+---
+
+##### `get_recent_signal_hashes(minutes: int = 15) -> set[str]`
+Retrieve signal hashes from the last N minutes.
+
+**Parameters**:
+- `minutes` (int, default=15): Lookback window in minutes
+
+**Returns**: Set of hash strings
+
+**Database Impact**:
+- Queries `signal_hashes` table within time window
+- Uses index: `idx_signal_hash_created`
+
+**Purpose**: Check for duplicate signals during validation
+
+**Example**:
+```python
+recent_hashes = db.get_recent_signal_hashes(minutes=15)
+if signal_hash in recent_hashes:
+    print("Duplicate signal detected, skipping...")
+else:
+    print("New signal, processing...")
+```
+
+---
+
+##### `cleanup_old_hashes(hours: int = 24) -> int`
+Remove signal hashes older than N hours.
+
+**Parameters**:
+- `hours` (int, default=24): Age threshold for cleanup
+
+**Returns**: Number of deleted records
+
+**Database Impact**:
+- Deletes from `signal_hashes` table records older than threshold
+
+**Purpose**: Maintain database size and remove stale duplicate detection data
+
+**Example**:
+```python
+deleted_count = db.cleanup_old_hashes(hours=24)
+logger.info(f"Cleaned up {deleted_count} old signal hashes")
 ```
 
 ---
