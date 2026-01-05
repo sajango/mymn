@@ -65,3 +65,14 @@ def get_tp_monitor_trigger() -> IntervalTrigger:
         IntervalTrigger for 30-second intervals
     """
     return IntervalTrigger(seconds=30)
+
+
+def get_weekly_report_trigger() -> CronTrigger:
+    """Get cron trigger for weekly report generation.
+
+    Triggers every Sunday at 23:00 UTC.
+
+    Returns:
+        CronTrigger for weekly schedule
+    """
+    return CronTrigger(day_of_week="sun", hour=23, minute=0)

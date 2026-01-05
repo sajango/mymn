@@ -1,7 +1,7 @@
 # MT5 Elliott Wave Trading System - Documentation Hub
 
-**Last Updated**: 2026-01-04
-**Phase**: 8 Complete (Web Dashboard)
+**Last Updated**: 2026-01-05
+**Phase**: 9 Complete (Backtest Analytics)
 **Status**: Production Ready
 
 ## Welcome to the Documentation
@@ -199,7 +199,7 @@ This directory contains comprehensive documentation for the MT5 Elliott Wave Aut
 5. Trade Execution
 6. User Interface (Telegram)
 7. Web Dashboard (FastAPI + React)
-8. (Future: Backtest Analytics)
+8. Backtest Analytics (Performance metrics + reporting)
 ```
 
 ### Components (from Codebase Summary)
@@ -209,14 +209,16 @@ Core Modules:
 - mt5_client.py       → Market data & order execution
 - signal_parser.py    → Signal models & validation
 - claude_client.py    → AI integration
-- database.py         → Trade persistence
+- database.py         → Trade persistence & analytics queries
 - trade_executor.py   → Execution workflow
 - trailing_stop_manager.py → Stop loss management
 - telegram_bot.py     → User interface
 - scheduler.py        → APScheduler configuration (Phase 6)
 - session_detector.py → Session detection & modifiers (Phase 6)
 - spread_checker.py   → Spread validation (Phase 6)
-- main.py             → System orchestration (Phase 6)
+- analytics.py        → Performance metrics calculation (Phase 9)
+- reports.py          → Weekly report generation (Phase 9)
+- main.py             → System orchestration (Phase 6+)
 ```
 
 ### API Summary (from API Documentation)
@@ -296,14 +298,28 @@ Core Modules:
 - ✅ Security hardening (rate limiting, CORS, input validation)
 - ✅ 14 API tests (100% passing)
 
+### Phase 9: Backtest Analytics ✅ COMPLETE
+- ✅ AnalyticsEngine for metric calculation
+- ✅ Overall metrics: win rate, profit factor, Sharpe ratio, max drawdown
+- ✅ Breakdown by wave position (Wave 3, 5, C)
+- ✅ Breakdown by session (London, NY, Asian, Overlap)
+- ✅ Breakdown by confidence level (75+, 60-74, <60)
+- ✅ WeeklyReportGenerator with scheduled reports
+- ✅ Optimization suggestions based on metrics
+- ✅ SQLite analytics queries and data persistence
+- ✅ JSON export for dashboard consumption
+- ✅ Full integration with Phase 8 dashboard
+
 ### Metrics
 - **Code Coverage**: 66% overall (84-100% for core modules)
 - **Test Cases**: 295 total (281 unit + 14 API)
-- **Documentation**: 40,000+ words
-- **API Methods**: 40+ documented
-- **Components**: 12+ fully documented
+- **Documentation**: 42,000+ words
+- **API Methods**: 45+ documented
+- **Components**: 14+ fully documented
 - **Dashboard Endpoints**: 8 fully functional
 - **React Components**: 7 production-ready
+- **Analytics Metrics**: 18 calculated (overall + breakdowns)
+- **Report Generators**: Weekly + optimization suggestions
 
 ---
 
@@ -479,9 +495,9 @@ This documentation provides:
 ## Document Information
 
 **Created**: 2026-01-04
-**Last Updated**: 2026-01-04
+**Last Updated**: 2026-01-05
 **Maintained By**: Development Team
-**Next Review**: After Phase 9 Completion (Backtest Analytics)
+**Next Review**: After Phase 10 or next major feature
 **Distribution**: Internal - Development Team
 
 ---

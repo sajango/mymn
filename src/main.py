@@ -25,12 +25,14 @@ from src.scheduler import (
     create_scheduler,
     get_m15_trigger,
     get_tp_monitor_trigger,
+    get_weekly_report_trigger,
 )
 from src.session_detector import get_session_detector
 from src.spread_checker import get_spread_checker
 from src.telegram_bot import get_trading_bot
 from src.trade_executor import get_trade_executor
 from src.trailing_stop_manager import get_trailing_manager
+from src.reports import get_weekly_reporter
 
 # Configure logging
 settings = get_settings()
@@ -75,6 +77,7 @@ class TradingOrchestrator:
         self._session_detector = None
         self._spread_checker = None
         self._news_calendar = None
+        self._weekly_reporter = None
 
     @property
     def db(self):
@@ -124,6 +127,13 @@ class TradingOrchestrator:
         if self._news_calendar is None:
             self._news_calendar = get_news_calendar()
         return self._news_calendar
+
+    @property
+    def weekly_reporter(self):
+        """Lazy load weekly reporter."""
+        if self._weekly_reporter is None:
+            self._weekly_reporter = get_weekly_reporter()
+        return self._weekly_reporter
 
     async def initialize(self) -> bool:
         """Initialize all system components.
@@ -361,6 +371,43 @@ class TradingOrchestrator:
             logger.error(f"TP monitor job failed: {e}")
             self._tp_monitor_failures += 1
 
+    async def weekly_report_job(self):
+        """Weekly report job - runs every Sunday at 23:00 UTC.
+
+        Generates performance report and sends summary via Telegram.
+        """
+        try:
+            logger.info("Generating weekly report...")
+            report = self.weekly_reporter.generate_weekly_report()
+
+            # Extract key metrics for notification
+            overall = report.get("overall_metrics", {})
+            period = report.get("period", {})
+            suggestions = report.get("suggestions", [])
+
+            # Build summary message
+            message = (
+                f"*Weekly Performance Report*\n"
+                f"Period: {period.get('start')} to {period.get('end')}\n\n"
+                f"Trades: {overall.get('total_trades', 0)}\n"
+                f"Win Rate: {overall.get('win_rate', 0)}%\n"
+                f"Profit Factor: {overall.get('profit_factor', 0)}\n"
+                f"Return: {overall.get('total_return_percent', 0)}%\n"
+                f"Max DD: {overall.get('max_drawdown_percent', 0)}%\n"
+                f"Sharpe: {overall.get('sharpe_ratio', 0)}"
+            )
+
+            if suggestions:
+                message += "\n\n*Suggestions:*\n"
+                for s in suggestions[:3]:  # Limit to 3 suggestions
+                    message += f"• {s}\n"
+
+            await self.bot.send_message(message)
+            logger.info("Weekly report sent successfully")
+
+        except Exception as e:
+            logger.error(f"Weekly report job failed: {e}")
+
     async def on_execute(self, signal) -> bool:
         """Callback when user clicks Execute button.
 
@@ -411,6 +458,14 @@ class TradingOrchestrator:
             self.tp_monitor_job,
             get_tp_monitor_trigger(),
             id="tp_monitor",
+            replace_existing=True,
+        )
+
+        # Schedule weekly report job (Sunday 23:00 UTC)
+        self.scheduler.add_job(
+            self.weekly_report_job,
+            get_weekly_report_trigger(),
+            id="weekly_report",
             replace_existing=True,
         )
 

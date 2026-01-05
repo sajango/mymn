@@ -649,6 +649,101 @@ class Database:
 
             return {row["reason"]: row["count"] for row in rows}
 
+    # Analytics queries for Phase 9
+
+    def get_closed_trades(
+        self, start_date: Optional[str] = None, end_date: Optional[str] = None
+    ) -> list[dict]:
+        """Get all closed trades for analytics.
+
+        Args:
+            start_date: Optional start date filter (ISO format)
+            end_date: Optional end date filter (ISO format)
+
+        Returns:
+            List of closed trade dicts
+        """
+        query = "SELECT * FROM trades WHERE status = 'closed'"
+        params = []
+
+        if start_date:
+            query += " AND close_time >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND close_time <= ?"
+            params.append(end_date)
+
+        query += " ORDER BY close_time"
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_signals_with_trades(self) -> list[dict]:
+        """Get signals with associated trade data for analytics.
+
+        Returns:
+            List of signals with trade profit and status
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    s.*,
+                    t.profit,
+                    t.close_price,
+                    t.entry_price as trade_entry,
+                    t.stop_loss as trade_sl,
+                    t.status as trade_status
+                FROM signals s
+                LEFT JOIN trades t ON s.id = t.signal_id
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_analytics_snapshot(self) -> dict:
+        """Get aggregated analytics snapshot for reports.
+
+        Returns:
+            Dict with aggregated stats for reporting
+        """
+        with self._get_connection() as conn:
+            # Overall stats
+            overall = conn.execute(
+                """
+                SELECT
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as wins,
+                    SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END) as losses,
+                    COALESCE(SUM(profit), 0) as total_profit,
+                    COALESCE(SUM(CASE WHEN profit > 0 THEN profit ELSE 0 END), 0) as gross_profit,
+                    COALESCE(ABS(SUM(CASE WHEN profit < 0 THEN profit ELSE 0 END)), 0) as gross_loss
+                FROM trades WHERE status = 'closed'
+                """
+            ).fetchone()
+
+            # Signal counts by session
+            by_session = conn.execute(
+                """
+                SELECT
+                    CASE
+                        WHEN CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 12 AND 14 THEN 'overlap'
+                        WHEN CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 7 AND 15 THEN 'london'
+                        WHEN CAST(strftime('%H', timestamp) AS INTEGER) BETWEEN 12 AND 20 THEN 'new_york'
+                        WHEN CAST(strftime('%H', timestamp) AS INTEGER) < 7 THEN 'asian'
+                        ELSE 'offhours'
+                    END as session,
+                    COUNT(*) as count
+                FROM signals
+                GROUP BY session
+                """
+            ).fetchall()
+
+            return {
+                "overall": dict(overall) if overall else {},
+                "by_session": {row["session"]: row["count"] for row in by_session},
+            }
+
 
 # Lazy singleton
 _database: Optional[Database] = None
