@@ -319,13 +319,54 @@ class TradingSignal(BaseModel):
         return self.signal.action in (SignalAction.SELL, SignalAction.SELL_LIMIT)
 
 
+def _extract_json_at_position(text: str, start: int) -> Optional[dict]:
+    """Try to extract valid JSON object starting at given position.
+
+    Uses brace-matching with proper string/escape handling.
+
+    Args:
+        text: Full text to search in
+        start: Position of opening brace
+
+    Returns:
+        Parsed JSON dict or None if invalid
+    """
+    depth = 0
+    in_string = False
+    escape_next = False
+
+    for i, char in enumerate(text[start:]):
+        if escape_next:
+            escape_next = False
+            continue
+        if char == "\\":
+            escape_next = True
+            continue
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if not in_string:
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    json_str = text[start : start + i + 1]
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        return None
+    return None
+
+
 def extract_json_from_response(response: str) -> Optional[dict]:
     """Extract JSON from Claude CLI response.
 
     Tries multiple extraction strategies:
     1. JSON code block (```json ... ```)
     2. Generic code block (``` ... ```)
-    3. Raw JSON object ({ ... })
+    3. Raw JSON object at start ({ ... })
+    4. JSON object anywhere in response (handles prose before JSON)
 
     Args:
         response: Raw CLI output string
@@ -343,7 +384,9 @@ def extract_json_from_response(response: str) -> Optional[dict]:
     if matches:
         for match in matches:
             try:
-                return json.loads(match)
+                result = json.loads(match)
+                logger.debug("Extracted JSON via Strategy 1 (```json block)")
+                return result
             except json.JSONDecodeError:
                 continue
 
@@ -355,38 +398,34 @@ def extract_json_from_response(response: str) -> Optional[dict]:
             # Skip non-JSON code blocks
             if match.strip().startswith(("{", "[")):
                 try:
-                    return json.loads(match)
+                    result = json.loads(match)
+                    logger.debug("Extracted JSON via Strategy 2 (generic ``` block)")
+                    return result
                 except json.JSONDecodeError:
                     continue
 
-    # Strategy 3: Raw JSON object - find outermost braces
+    # Strategy 3: Raw JSON object at start
     brace_start = response.find("{")
-    if brace_start != -1:
-        # Find matching closing brace
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i, char in enumerate(response[brace_start:]):
-            if escape_next:
-                escape_next = False
-                continue
-            if char == "\\":
-                escape_next = True
-                continue
-            if char == '"' and not escape_next:
-                in_string = not in_string
-                continue
-            if not in_string:
-                if char == "{":
-                    depth += 1
-                elif char == "}":
-                    depth -= 1
-                    if depth == 0:
-                        json_str = response[brace_start : brace_start + i + 1]
-                        try:
-                            return json.loads(json_str)
-                        except json.JSONDecodeError:
-                            break
+    if brace_start != -1 and brace_start < 50:  # JSON starts near beginning
+        result = _extract_json_at_position(response, brace_start)
+        if result:
+            logger.debug("Extracted JSON via Strategy 3 (raw JSON at start)")
+            return result
+
+    # Strategy 4: Find JSON object ANYWHERE in response (handles prose before JSON)
+    # Search for { positions and try to parse valid JSON from each (limit attempts for performance)
+    MAX_BRACE_ATTEMPTS = 20
+    brace_positions = [i for i, c in enumerate(response) if c == '{'][:MAX_BRACE_ATTEMPTS]
+    for pos in brace_positions:
+        # Skip if we already tried this position
+        if pos == brace_start and brace_start < 50:
+            continue
+        result = _extract_json_at_position(response, pos)
+        if result:
+            # Validate it looks like a trading signal (requires BOTH keys)
+            if isinstance(result, dict) and ("signal" in result and "timestamp" in result):
+                logger.debug(f"Extracted JSON via Strategy 4 (found at position {pos})")
+                return result
 
     logger.warning("Failed to extract JSON from response")
     return None

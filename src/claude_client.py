@@ -405,13 +405,22 @@ class ClaudeClient:
                 "cli_failed", "Claude CLI failed after retries"
             )
 
-        # Parse response
+        # Parse response with enhanced logging for debugging
         logger.info("[ANALYSIS] Parsing Claude response...")
+        logger.debug(f"[ANALYSIS] Response: {len(response)} chars, "
+                     f"has_json_block={'```json' in response}, "
+                     f"has_braces={'{' in response}")
+        logger.debug(f"[ANALYSIS] Preview: {response[:500].replace(chr(10), ' ')}")
+
         signal = parse_trading_signal(response)
 
         if signal is None:
             logger.error("[ANALYSIS] Failed to parse signal from response")
-            logger.debug(f"[ANALYSIS] Raw response (first 1000 chars): {response[:1000]}")
+            logger.warning(f"[ANALYSIS] Raw response (first 1000 chars): {response[:1000]}")
+
+            # Save failed response to disk for investigation
+            self._save_failed_response(response)
+
             return create_no_trade_signal(
                 "parse_failed", "Could not parse JSON from CLI response"
             )
@@ -459,6 +468,39 @@ class ClaudeClient:
         self._save_analysis(response, signal, csv_metadata, elapsed)
 
         return signal
+
+    def _save_failed_response(self, response: str) -> Optional[Path]:
+        """Save failed response to disk for investigation.
+
+        Args:
+            response: Raw Claude CLI response that failed to parse
+
+        Returns:
+            Path to saved file or None on error
+        """
+        failed_dir = Path(__file__).parent.parent / "data" / "failed_analyses"
+        failed_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filepath = failed_dir / f"failed_{timestamp}.txt"
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(f"=== FAILED RESPONSE ===\n")
+                f.write(f"Timestamp: {datetime.utcnow().isoformat()}Z\n")
+                f.write(f"Response length: {len(response)} chars\n")
+                f.write(f"Has ```json: {'```json' in response}\n")
+                f.write(f"Has ```: {'```' in response}\n")
+                f.write(f"Has {{: {'{' in response}\n")
+                f.write(f"=== RAW RESPONSE ===\n")
+                f.write(response)
+
+            logger.info(f"[ANALYSIS] Failed response saved to: {filepath}")
+            return filepath
+
+        except Exception as e:
+            logger.error(f"[ANALYSIS] Failed to save failed response: {e}")
+            return None
 
     def _save_analysis(
         self,

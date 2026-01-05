@@ -149,6 +149,36 @@ class TestExtractJsonFromResponse:
         assert result is not None
         assert result.get("first") is True
 
+    def test_extract_json_after_prose(self) -> None:
+        """Test Strategy 4: extraction finds JSON anywhere after prose."""
+        response = '''Based on the Elliott Wave analysis of the XAUUSD data:
+
+**H4 Analysis**: Bullish impulse wave structure with Wave 4 completing near the 38.2% retracement.
+
+**H1 Analysis**: Corrective pattern forming, but the overall trend remains bullish.
+
+**Trading Signal:**
+
+{"timestamp": "2024-08-21T14:30:00Z", "symbol": "XAUUSD", "signal": {"action": "BUY", "entry_price": 3340.00, "stop_loss": 3310.00, "confidence": 78}}
+
+This completes the analysis.'''
+        result = extract_json_from_response(response)
+        assert result is not None
+        assert result["signal"]["action"] == "BUY"
+        assert result["signal"]["confidence"] == 78
+
+    def test_extract_json_with_prose_and_nested_braces(self) -> None:
+        """Test extraction ignores invalid JSON snippets in prose."""
+        response = '''Analysis shows {wave pattern} in progress.
+
+The function returns {error: true} on failure.
+
+Final signal:
+{"timestamp": "2024-08-21T14:30:00Z", "signal": {"action": "SELL", "confidence": 65}}'''
+        result = extract_json_from_response(response)
+        assert result is not None
+        assert result["signal"]["action"] == "SELL"
+
 
 class TestTradingSignalModel:
     """Test TradingSignal Pydantic model."""
