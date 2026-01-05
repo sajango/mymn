@@ -352,10 +352,12 @@ class MT5Client:
     ) -> float:
         """Calculate lot size based on risk percentage and confidence.
 
-        Position sizing uses confidence-adjusted risk:
-        - confidence >= 75: full position (100% of risk_percent)
-        - confidence 60-74: half position (50% of risk_percent)
-        - confidence < 60: minimum position
+        Position sizing modes:
+        1. Fixed lots mode (use_fixed_lots=true): Uses config.fixed_lot_size
+        2. Risk-based mode (default): Calculates based on account balance and SL distance
+           - confidence >= 75: full position (100% of risk_percent)
+           - confidence 60-74: half position (50% of risk_percent)
+           - confidence < 60: minimum position
 
         Args:
             symbol: Trading symbol
@@ -367,6 +369,13 @@ class MT5Client:
         Returns:
             Calculated lot size
         """
+        # Fixed lots mode - bypass risk calculation
+        if self.config.use_fixed_lots:
+            lot_size = self.config.fixed_lot_size
+            logger.info(f"Position size: {lot_size} lots (FIXED MODE)")
+            return lot_size
+
+        # Risk-based calculation
         risk_percent = risk_percent or self.config.risk_percent
 
         # Confidence-based position sizing

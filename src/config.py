@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     max_position_size: float = Field(
         default=0.1, ge=0.01, le=1.0, description="Maximum position size in lots"
     )
+
+    # Position Sizing Mode
+    use_fixed_lots: bool = Field(
+        default=False, description="Use fixed lot size instead of risk-based calculation"
+    )
+    fixed_lot_size: float = Field(
+        default=0.03, ge=0.01, le=1.0, description="Fixed lot size when use_fixed_lots=true"
+    )
     paper_trading: bool = Field(default=True, description="Enable paper trading mode")
     claude_timeout: int = Field(
         default=300, ge=60, le=600, description="Claude CLI timeout in seconds"
