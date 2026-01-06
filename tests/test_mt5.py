@@ -222,39 +222,45 @@ class TestGetPositionCloseInfo:
     """Test position close info retrieval from deal history."""
 
     def test_parse_close_reason_tp(self):
-        """Should parse TP close reason."""
+        """Should parse TP close reason using MT5 constant."""
+        import MetaTrader5 as mt5
         client = MT5Client()
-        deal = type("Deal", (), {"reason": 5, "comment": ""})()
+        deal = type("Deal", (), {"reason": mt5.DEAL_REASON_TP, "comment": ""})()
         assert client._parse_close_reason(deal) == "tp"
 
     def test_parse_close_reason_sl(self):
-        """Should parse SL close reason."""
+        """Should parse SL close reason using MT5 constant."""
+        import MetaTrader5 as mt5
         client = MT5Client()
-        deal = type("Deal", (), {"reason": 4, "comment": ""})()
+        deal = type("Deal", (), {"reason": mt5.DEAL_REASON_SL, "comment": ""})()
         assert client._parse_close_reason(deal) == "sl"
 
     def test_parse_close_reason_stop_out(self):
-        """Should parse stop out reason."""
+        """Should parse stop out reason using MT5 constant."""
+        import MetaTrader5 as mt5
         client = MT5Client()
-        deal = type("Deal", (), {"reason": 6, "comment": ""})()
+        deal = type("Deal", (), {"reason": mt5.DEAL_REASON_SO, "comment": ""})()
         assert client._parse_close_reason(deal) == "stop_out"
 
     def test_parse_close_reason_from_comment_tp(self):
         """Should parse TP from comment when reason not definitive."""
+        import MetaTrader5 as mt5
         client = MT5Client()
-        deal = type("Deal", (), {"reason": 0, "comment": "tp"})()
+        deal = type("Deal", (), {"reason": mt5.DEAL_REASON_CLIENT, "comment": "tp"})()
         assert client._parse_close_reason(deal) == "tp"
 
     def test_parse_close_reason_from_comment_sl(self):
         """Should parse SL from comment when reason not definitive."""
+        import MetaTrader5 as mt5
         client = MT5Client()
-        deal = type("Deal", (), {"reason": 0, "comment": "stop loss"})()
+        deal = type("Deal", (), {"reason": mt5.DEAL_REASON_CLIENT, "comment": "stop loss"})()
         assert client._parse_close_reason(deal) == "sl"
 
     def test_parse_close_reason_manual(self):
-        """Should identify manual close."""
+        """Should identify manual close using MT5 constant."""
+        import MetaTrader5 as mt5
         client = MT5Client()
-        deal = type("Deal", (), {"reason": 0, "comment": ""})()
+        deal = type("Deal", (), {"reason": mt5.DEAL_REASON_CLIENT, "comment": ""})()
         assert client._parse_close_reason(deal) == "manual"
 
     def test_parse_close_reason_unknown(self):

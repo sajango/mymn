@@ -369,21 +369,26 @@ class TrailingStopManager:
         close_info = self.mt5.get_position_close_info(ticket)
 
         if close_info is None:
-            # No deal history found - mark as closed with estimated values
+            # No deal history found - estimate close from SL (conservative)
+            # Assume worst case: position hit stop loss
+            estimated_close, estimated_profit = self._estimate_close_values(trade)
+
             logger.warning(
                 f"Position {ticket} closed but no deal history. "
-                "Using last known values."
+                f"Estimated close={estimated_close:.2f}, profit={estimated_profit:.2f}"
             )
-            # Use entry price as close price (worst case estimate)
+
             self.db.close_trade(
                 trade_id=trade_id,
-                close_price=trade["entry_price"],
-                profit=0.0,
+                close_price=estimated_close,
+                profit=estimated_profit,
             )
             return {
                 "status": "synced",
                 "trade_id": trade_id,
                 "ticket": ticket,
+                "close_price": estimated_close,
+                "profit": estimated_profit,
                 "close_reason": "unknown",
                 "message": "Closed with estimated values (no deal history)",
             }
@@ -416,6 +421,33 @@ class TrailingStopManager:
             "close_reason": close_info["close_reason"],
             "close_time": close_info["close_time"].isoformat(),
         }
+
+    def _estimate_close_values(self, trade: dict) -> tuple[float, float]:
+        """Estimate close price and profit when deal history unavailable.
+
+        Uses conservative estimate: assumes SL hit (worst case).
+        For BUY: close at SL (loss), For SELL: close at SL (loss).
+
+        Args:
+            trade: Trade dict from database
+
+        Returns:
+            Tuple of (estimated_close_price, estimated_profit)
+        """
+        entry = trade["entry_price"]
+        sl = trade["stop_loss"]
+        volume = trade["volume"]
+        is_buy = trade["action"] == "BUY"
+
+        # Conservative estimate: assume SL was hit
+        estimated_close = sl
+
+        # Calculate estimated profit based on SL distance
+        # For XAUUSD: 1 lot = 100 oz, profit = price_diff * volume * 100
+        price_diff = estimated_close - entry if is_buy else entry - estimated_close
+        estimated_profit = price_diff * volume * 100  # Simplified for gold
+
+        return estimated_close, round(estimated_profit, 2)
 
     def check_all_positions(self) -> list[dict]:
         """Check all open positions for trailing stop updates.

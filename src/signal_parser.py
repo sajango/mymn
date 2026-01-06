@@ -495,10 +495,27 @@ def _normalize_signal_data(data: dict) -> dict:
     # Normalize signal sub-object
     signal = data.get("signal", {})
     if isinstance(signal, dict):
-        # Map direction -> action
+        # Map direction -> action (field name)
         if "direction" in signal and "action" not in signal:
             signal["action"] = signal.pop("direction")
             logger.debug("Normalized: direction -> action")
+
+        # Map direction values to action values (BULLISH -> BUY, etc.)
+        if "action" in signal:
+            action_val = str(signal["action"]).upper()
+            direction_to_action = {
+                "BULLISH": "BUY",
+                "BEARISH": "SELL",
+                "LONG": "BUY",
+                "SHORT": "SELL",
+                "NEUTRAL": "NO_TRADE",
+                "HOLD": "NO_TRADE",
+                "WAIT": "WAIT",
+            }
+            if action_val in direction_to_action:
+                original = signal["action"]
+                signal["action"] = direction_to_action[action_val]
+                logger.debug(f"Normalized: action value {original} -> {signal['action']}")
 
         # Convert confidence from 0-1 float to 0-100 int
         if "confidence" in signal:
@@ -530,6 +547,32 @@ def _normalize_signal_data(data: dict) -> dict:
             if tp_levels:
                 signal["take_profit"] = tp_levels
                 logger.debug(f"Normalized: take_profit_1/2/3 -> take_profit array ({len(tp_levels)} levels)")
+
+        # Normalize existing take_profit array items
+        if "take_profit" in signal and isinstance(signal["take_profit"], list):
+            normalized_tps = []
+            for i, tp in enumerate(signal["take_profit"]):
+                if isinstance(tp, dict):
+                    normalized_tp = dict(tp)
+
+                    # Convert level: int -> str (e.g., 1 -> "TP1")
+                    if "level" in normalized_tp:
+                        level_val = normalized_tp["level"]
+                        if isinstance(level_val, int):
+                            normalized_tp["level"] = f"TP{level_val}"
+                            logger.debug(f"Normalized: take_profit[{i}].level {level_val} -> TP{level_val}")
+
+                    # Convert ratio -> close_percent (0.5 -> 50)
+                    if "ratio" in normalized_tp and "close_percent" not in normalized_tp:
+                        ratio = normalized_tp.pop("ratio")
+                        if isinstance(ratio, (int, float)):
+                            normalized_tp["close_percent"] = int(ratio * 100)
+                            logger.debug(f"Normalized: take_profit[{i}].ratio {ratio} -> close_percent {normalized_tp['close_percent']}")
+
+                    normalized_tps.append(normalized_tp)
+                else:
+                    normalized_tps.append(tp)
+            signal["take_profit"] = normalized_tps
 
         data["signal"] = signal
 

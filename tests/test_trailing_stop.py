@@ -113,13 +113,16 @@ class TestCheckPosition:
         assert result["status"] == "skipped"
 
     def test_position_not_in_mt5(self, manager, open_trade, mock_mt5):
-        """Should sync externally closed position."""
+        """Should sync externally closed position with conservative estimate."""
         mock_mt5.get_position_by_ticket.return_value = None
         mock_mt5.get_position_close_info.return_value = None  # No deal history
 
         result = manager.check_position(open_trade)
         assert result["status"] == "synced"
         assert result["close_reason"] == "unknown"
+        # Conservative estimate: close at SL with calculated loss
+        assert result["close_price"] == 3340.00
+        assert result["profit"] == -100.0
 
 
 class TestActivation:
@@ -433,7 +436,7 @@ class TestPositionSync:
     def test_sync_closed_position_no_deal_history(
         self, manager, open_trade, mock_mt5, temp_db
     ):
-        """Should handle missing deal history gracefully."""
+        """Should handle missing deal history with conservative estimate."""
         mock_mt5.get_position_by_ticket.return_value = None
         mock_mt5.get_position_close_info.return_value = None
 
@@ -443,9 +446,16 @@ class TestPositionSync:
         assert result["close_reason"] == "unknown"
         assert "estimated" in result["message"].lower()
 
-        # Trade should still be marked closed
+        # Should have estimated close at SL (3340 for BUY)
+        assert result["close_price"] == 3340.00
+        # Estimated profit: (3340 - 3350) * 0.10 * 100 = -100.0
+        assert result["profit"] == -100.0
+
+        # Trade should be marked closed with estimated values
         trade = temp_db.get_trade_by_id(open_trade)
         assert trade["status"] == "closed"
+        assert trade["close_price"] == 3340.00
+        assert trade["profit"] == -100.0
 
     def test_sync_updates_during_check_all(
         self, manager, temp_db, sample_signal, mock_mt5

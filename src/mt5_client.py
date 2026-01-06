@@ -732,16 +732,19 @@ class MT5Client:
         return atr.iloc[-1] if not atr.empty else None
 
     def get_position_close_info(
-        self, ticket: int, lookback_days: int = 7
+        self, ticket: int, lookback_days: int = 7, max_retries: int = 3
     ) -> Optional[dict]:
         """Get close info for a position from deal history.
 
         When MT5 auto-closes a position (TP/SL hit), this retrieves
         the close price and profit from deal history.
 
+        Uses retry logic with exponential backoff to handle MT5 sync delays.
+
         Args:
             ticket: Original position ticket
             lookback_days: Days to search in history
+            max_retries: Number of retry attempts for deal history lookup
 
         Returns:
             Dict with close_price, profit, close_reason or None if not found
@@ -749,18 +752,25 @@ class MT5Client:
         from_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
         to_date = datetime.now(timezone.utc) + timedelta(days=1)
 
-        # Get deals for this position
-        deals = mt5.history_deals_get(from_date, to_date, position=ticket)
+        # Retry with exponential backoff for MT5 sync delays
+        deals = None
+        for attempt in range(max_retries):
+            deals = mt5.history_deals_get(from_date, to_date, position=ticket)
+            if deals is not None and len(deals) > 0:
+                break
+            if attempt < max_retries - 1:
+                delay = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                logger.debug(f"No deals yet for {ticket}, retry {attempt + 1}/{max_retries} in {delay}s")
+                time.sleep(delay)
 
         if deals is None or len(deals) == 0:
-            logger.debug(f"No deals found for position {ticket}")
+            logger.info(f"No deal history for position {ticket} after {max_retries} attempts")
             return None
 
-        # Find the closing deal (DEAL_ENTRY_OUT = 1)
-        # DEAL_ENTRY_IN = 0, DEAL_ENTRY_OUT = 1, DEAL_ENTRY_INOUT = 2
+        # Find the closing deal
         close_deal = None
         for deal in deals:
-            if deal.entry == 1:  # DEAL_ENTRY_OUT
+            if deal.entry == mt5.DEAL_ENTRY_OUT:
                 close_deal = deal
                 break
 
@@ -791,20 +801,25 @@ class MT5Client:
         Returns:
             Close reason string: 'tp', 'sl', 'manual', or 'unknown'
         """
-        # Check deal reason field
-        # DEAL_REASON_CLIENT = 0, DEAL_REASON_MOBILE = 1, DEAL_REASON_WEB = 2
-        # DEAL_REASON_EXPERT = 3, DEAL_REASON_SL = 4, DEAL_REASON_TP = 5
-        # DEAL_REASON_SO = 6, DEAL_REASON_ROLLOVER = 7, DEAL_REASON_VMARGIN = 8
+        # Map MT5 deal reason constants to readable strings
         reason_map = {
-            4: "sl",
-            5: "tp",
-            6: "stop_out",
+            mt5.DEAL_REASON_SL: "sl",
+            mt5.DEAL_REASON_TP: "tp",
+            mt5.DEAL_REASON_SO: "stop_out",
+        }
+
+        # Manual close reasons
+        manual_reasons = {
+            mt5.DEAL_REASON_CLIENT,
+            mt5.DEAL_REASON_MOBILE,
+            mt5.DEAL_REASON_WEB,
+            mt5.DEAL_REASON_EXPERT,
         }
 
         if hasattr(deal, "reason") and deal.reason in reason_map:
             return reason_map[deal.reason]
 
-        # Fallback: check comment
+        # Fallback: check comment for keywords
         comment = deal.comment.lower() if deal.comment else ""
         if "tp" in comment or "take profit" in comment:
             return "tp"
@@ -813,7 +828,7 @@ class MT5Client:
         if "so" in comment or "stop out" in comment:
             return "stop_out"
 
-        return "manual" if deal.reason in (0, 1, 2, 3) else "unknown"
+        return "manual" if deal.reason in manual_reasons else "unknown"
 
 
 # Singleton instance

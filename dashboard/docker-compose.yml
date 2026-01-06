@@ -9,7 +9,7 @@ services:
       # Mount SQLite database (read-only)
       - ../data:/data:ro
     environment:
-      - DB_PATH=/data/trading.db
+      - DB_PATH=/data/trades.db
     ports:
       - "8000:8000"
     restart: unless-stopped
