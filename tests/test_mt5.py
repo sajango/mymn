@@ -218,5 +218,51 @@ class TestMT5ClientInitialization:
         assert client.is_connected() is False
 
 
+class TestGetPositionCloseInfo:
+    """Test position close info retrieval from deal history."""
+
+    def test_parse_close_reason_tp(self):
+        """Should parse TP close reason."""
+        client = MT5Client()
+        deal = type("Deal", (), {"reason": 5, "comment": ""})()
+        assert client._parse_close_reason(deal) == "tp"
+
+    def test_parse_close_reason_sl(self):
+        """Should parse SL close reason."""
+        client = MT5Client()
+        deal = type("Deal", (), {"reason": 4, "comment": ""})()
+        assert client._parse_close_reason(deal) == "sl"
+
+    def test_parse_close_reason_stop_out(self):
+        """Should parse stop out reason."""
+        client = MT5Client()
+        deal = type("Deal", (), {"reason": 6, "comment": ""})()
+        assert client._parse_close_reason(deal) == "stop_out"
+
+    def test_parse_close_reason_from_comment_tp(self):
+        """Should parse TP from comment when reason not definitive."""
+        client = MT5Client()
+        deal = type("Deal", (), {"reason": 0, "comment": "tp"})()
+        assert client._parse_close_reason(deal) == "tp"
+
+    def test_parse_close_reason_from_comment_sl(self):
+        """Should parse SL from comment when reason not definitive."""
+        client = MT5Client()
+        deal = type("Deal", (), {"reason": 0, "comment": "stop loss"})()
+        assert client._parse_close_reason(deal) == "sl"
+
+    def test_parse_close_reason_manual(self):
+        """Should identify manual close."""
+        client = MT5Client()
+        deal = type("Deal", (), {"reason": 0, "comment": ""})()
+        assert client._parse_close_reason(deal) == "manual"
+
+    def test_parse_close_reason_unknown(self):
+        """Should return unknown for unrecognized reason."""
+        client = MT5Client()
+        deal = type("Deal", (), {"reason": 99, "comment": ""})()
+        assert client._parse_close_reason(deal) == "unknown"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

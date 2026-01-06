@@ -2,6 +2,7 @@
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -729,6 +730,90 @@ class MT5Client:
 
         atr = self.calculate_atr(df["high"], df["low"], df["close"], period)
         return atr.iloc[-1] if not atr.empty else None
+
+    def get_position_close_info(
+        self, ticket: int, lookback_days: int = 7
+    ) -> Optional[dict]:
+        """Get close info for a position from deal history.
+
+        When MT5 auto-closes a position (TP/SL hit), this retrieves
+        the close price and profit from deal history.
+
+        Args:
+            ticket: Original position ticket
+            lookback_days: Days to search in history
+
+        Returns:
+            Dict with close_price, profit, close_reason or None if not found
+        """
+        from_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        to_date = datetime.now(timezone.utc) + timedelta(days=1)
+
+        # Get deals for this position
+        deals = mt5.history_deals_get(from_date, to_date, position=ticket)
+
+        if deals is None or len(deals) == 0:
+            logger.debug(f"No deals found for position {ticket}")
+            return None
+
+        # Find the closing deal (DEAL_ENTRY_OUT = 1)
+        # DEAL_ENTRY_IN = 0, DEAL_ENTRY_OUT = 1, DEAL_ENTRY_INOUT = 2
+        close_deal = None
+        for deal in deals:
+            if deal.entry == 1:  # DEAL_ENTRY_OUT
+                close_deal = deal
+                break
+
+        if close_deal is None:
+            logger.debug(f"No closing deal found for position {ticket}")
+            return None
+
+        # Determine close reason from deal comment/reason
+        close_reason = self._parse_close_reason(close_deal)
+
+        return {
+            "ticket": ticket,
+            "close_price": close_deal.price,
+            "profit": close_deal.profit,
+            "commission": close_deal.commission,
+            "swap": close_deal.swap,
+            "close_time": datetime.fromtimestamp(close_deal.time, tz=timezone.utc),
+            "close_reason": close_reason,
+            "deal_ticket": close_deal.ticket,
+        }
+
+    def _parse_close_reason(self, deal) -> str:
+        """Parse close reason from deal.
+
+        Args:
+            deal: MT5 deal object
+
+        Returns:
+            Close reason string: 'tp', 'sl', 'manual', or 'unknown'
+        """
+        # Check deal reason field
+        # DEAL_REASON_CLIENT = 0, DEAL_REASON_MOBILE = 1, DEAL_REASON_WEB = 2
+        # DEAL_REASON_EXPERT = 3, DEAL_REASON_SL = 4, DEAL_REASON_TP = 5
+        # DEAL_REASON_SO = 6, DEAL_REASON_ROLLOVER = 7, DEAL_REASON_VMARGIN = 8
+        reason_map = {
+            4: "sl",
+            5: "tp",
+            6: "stop_out",
+        }
+
+        if hasattr(deal, "reason") and deal.reason in reason_map:
+            return reason_map[deal.reason]
+
+        # Fallback: check comment
+        comment = deal.comment.lower() if deal.comment else ""
+        if "tp" in comment or "take profit" in comment:
+            return "tp"
+        if "sl" in comment or "stop loss" in comment:
+            return "sl"
+        if "so" in comment or "stop out" in comment:
+            return "stop_out"
+
+        return "manual" if deal.reason in (0, 1, 2, 3) else "unknown"
 
 
 # Singleton instance

@@ -85,8 +85,8 @@ class TrailingStopManager:
         # Get current position from MT5
         position = self.mt5.get_position_by_ticket(trade["ticket"])
         if position is None:
-            logger.warning(f"Position {trade['ticket']} not found in MT5")
-            return {"status": "closed", "message": "Position closed externally"}
+            # Position closed externally - sync DB state
+            return self._sync_closed_position(trade)
 
         current_state = TrailingState(trade["trailing_state"])
         action_taken = "none"
@@ -350,6 +350,72 @@ class TrailingStopManager:
             return "trailing_update_failed"
 
         return "none"
+
+    def _sync_closed_position(self, trade: dict) -> dict:
+        """Sync DB when MT5 position was closed externally (TP/SL hit).
+
+        Retrieves close info from MT5 deal history and updates DB.
+
+        Args:
+            trade: Trade dict from database
+
+        Returns:
+            Status dict with sync details
+        """
+        ticket = trade["ticket"]
+        trade_id = trade["id"]
+
+        # Get close info from MT5 deal history
+        close_info = self.mt5.get_position_close_info(ticket)
+
+        if close_info is None:
+            # No deal history found - mark as closed with estimated values
+            logger.warning(
+                f"Position {ticket} closed but no deal history. "
+                "Using last known values."
+            )
+            # Use entry price as close price (worst case estimate)
+            self.db.close_trade(
+                trade_id=trade_id,
+                close_price=trade["entry_price"],
+                profit=0.0,
+            )
+            return {
+                "status": "synced",
+                "trade_id": trade_id,
+                "ticket": ticket,
+                "close_reason": "unknown",
+                "message": "Closed with estimated values (no deal history)",
+            }
+
+        # Calculate total profit including swap and commission
+        total_profit = (
+            close_info["profit"]
+            + close_info.get("swap", 0)
+            + close_info.get("commission", 0)
+        )
+
+        # Update DB with actual close info
+        self.db.close_trade(
+            trade_id=trade_id,
+            close_price=close_info["close_price"],
+            profit=total_profit,
+        )
+
+        logger.info(
+            f"Position synced: trade={trade_id}, ticket={ticket}, "
+            f"reason={close_info['close_reason']}, profit={total_profit:.2f}"
+        )
+
+        return {
+            "status": "synced",
+            "trade_id": trade_id,
+            "ticket": ticket,
+            "close_price": close_info["close_price"],
+            "profit": total_profit,
+            "close_reason": close_info["close_reason"],
+            "close_time": close_info["close_time"].isoformat(),
+        }
 
     def check_all_positions(self) -> list[dict]:
         """Check all open positions for trailing stop updates.

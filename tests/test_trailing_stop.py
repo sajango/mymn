@@ -113,11 +113,13 @@ class TestCheckPosition:
         assert result["status"] == "skipped"
 
     def test_position_not_in_mt5(self, manager, open_trade, mock_mt5):
-        """Should detect externally closed position."""
+        """Should sync externally closed position."""
         mock_mt5.get_position_by_ticket.return_value = None
+        mock_mt5.get_position_close_info.return_value = None  # No deal history
 
         result = manager.check_position(open_trade)
-        assert result["status"] == "closed"
+        assert result["status"] == "synced"
+        assert result["close_reason"] == "unknown"
 
 
 class TestActivation:
@@ -373,6 +375,118 @@ class TestFailureTracking:
         manager._consecutive_failures = 5
         manager.reset_failures()
         assert manager._consecutive_failures == 0
+
+
+class TestPositionSync:
+    """Test position sync when MT5 closes position externally."""
+
+    def test_sync_closed_position_with_deal_history(
+        self, manager, open_trade, mock_mt5, temp_db
+    ):
+        """Should sync closed position using deal history."""
+        mock_mt5.get_position_by_ticket.return_value = None
+        mock_mt5.get_position_close_info.return_value = {
+            "ticket": 12345,
+            "close_price": 3365.00,
+            "profit": 150.00,
+            "commission": -1.50,
+            "swap": -0.50,
+            "close_time": datetime(2026, 1, 6, 12, 0, 0, tzinfo=timezone.utc),
+            "close_reason": "tp",
+            "deal_ticket": 99999,
+        }
+
+        result = manager.check_position(open_trade)
+
+        assert result["status"] == "synced"
+        assert result["close_reason"] == "tp"
+        assert result["profit"] == 148.00  # 150 - 1.5 - 0.5
+
+        # Verify DB updated
+        trade = temp_db.get_trade_by_id(open_trade)
+        assert trade["status"] == "closed"
+        assert trade["close_price"] == 3365.00
+        assert trade["profit"] == 148.00
+
+    def test_sync_closed_position_sl_hit(
+        self, manager, open_trade, mock_mt5, temp_db
+    ):
+        """Should sync position closed by stop loss."""
+        mock_mt5.get_position_by_ticket.return_value = None
+        mock_mt5.get_position_close_info.return_value = {
+            "ticket": 12345,
+            "close_price": 3340.00,
+            "profit": -100.00,
+            "commission": -1.50,
+            "swap": 0,
+            "close_time": datetime(2026, 1, 6, 12, 0, 0, tzinfo=timezone.utc),
+            "close_reason": "sl",
+            "deal_ticket": 99999,
+        }
+
+        result = manager.check_position(open_trade)
+
+        assert result["status"] == "synced"
+        assert result["close_reason"] == "sl"
+        assert result["profit"] == -101.50
+
+    def test_sync_closed_position_no_deal_history(
+        self, manager, open_trade, mock_mt5, temp_db
+    ):
+        """Should handle missing deal history gracefully."""
+        mock_mt5.get_position_by_ticket.return_value = None
+        mock_mt5.get_position_close_info.return_value = None
+
+        result = manager.check_position(open_trade)
+
+        assert result["status"] == "synced"
+        assert result["close_reason"] == "unknown"
+        assert "estimated" in result["message"].lower()
+
+        # Trade should still be marked closed
+        trade = temp_db.get_trade_by_id(open_trade)
+        assert trade["status"] == "closed"
+
+    def test_sync_updates_during_check_all(
+        self, manager, temp_db, sample_signal, mock_mt5
+    ):
+        """Should sync closed positions during bulk check."""
+        # Create 3 trades
+        trade_ids = []
+        for i in range(3):
+            signal_id = temp_db.save_signal(sample_signal)
+            trade_id = temp_db.save_trade(
+                signal_id=signal_id,
+                ticket=12345 + i,
+                volume=0.10,
+                signal=sample_signal,
+            )
+            trade_ids.append(trade_id)
+
+        # First two positions still open, third closed by TP
+        def mock_get_position(ticket):
+            if ticket == 12347:  # Third position
+                return None
+            return {"ticket": ticket, "current_price": 3355.00, "sl": 3340.00}
+
+        mock_mt5.get_position_by_ticket.side_effect = mock_get_position
+        mock_mt5.get_position_close_info.return_value = {
+            "ticket": 12347,
+            "close_price": 3360.00,
+            "profit": 100.00,
+            "commission": 0,
+            "swap": 0,
+            "close_time": datetime(2026, 1, 6, 12, 0, 0, tzinfo=timezone.utc),
+            "close_reason": "tp",
+            "deal_ticket": 99999,
+        }
+
+        results = manager.check_all_positions()
+
+        # Third trade should be synced
+        synced = [r for r in results if r.get("status") == "synced"]
+        assert len(synced) == 1
+        assert synced[0]["close_reason"] == "tp"
 
 
 class TestCheckAllPositions:
