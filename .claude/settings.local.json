@@ -9,7 +9,9 @@
       "Skill(plan:validate)",
       "Skill(plan:validate:*)",
       "Bash(cat:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(git -C \"D:\\\\ws\\\\mymn\" add -A)",
+      "Bash(git -C \"D:\\\\ws\\\\mymn\" diff --cached --stat)"
     ]
   }
 }

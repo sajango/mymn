@@ -529,6 +529,30 @@ def _normalize_signal_data(data: dict) -> dict:
             signal["risk_reward"] = signal.pop("risk_reward_ratio")
             logger.debug("Normalized: risk_reward_ratio -> risk_reward")
 
+        # Handle risk_reward as dict -> extract float
+        # Claude may return: {'risk_pips': 25.74, 'rr_ratio_tp1': 1.27, 'rr_ratio_tp2': 2.2, ...}
+        if "risk_reward" in signal and isinstance(signal["risk_reward"], dict):
+            rr_dict = signal["risk_reward"]
+            # Priority: rr_ratio_tp1 (first target), then calculate from pips
+            if "rr_ratio_tp1" in rr_dict:
+                signal["risk_reward"] = float(rr_dict["rr_ratio_tp1"])
+                logger.debug(f"Normalized: risk_reward dict -> {signal['risk_reward']} (from rr_ratio_tp1)")
+            elif "rr_ratio" in rr_dict:
+                signal["risk_reward"] = float(rr_dict["rr_ratio"])
+                logger.debug(f"Normalized: risk_reward dict -> {signal['risk_reward']} (from rr_ratio)")
+            elif "risk_pips" in rr_dict and "reward_pips_tp1" in rr_dict:
+                risk = rr_dict["risk_pips"]
+                reward = rr_dict["reward_pips_tp1"]
+                if risk > 0:
+                    signal["risk_reward"] = round(reward / risk, 2)
+                    logger.debug(f"Normalized: risk_reward dict -> {signal['risk_reward']} (calculated)")
+                else:
+                    signal["risk_reward"] = None
+            else:
+                # Can't extract a valid R:R, set to None
+                signal["risk_reward"] = None
+                logger.warning(f"Could not extract risk_reward from dict: {rr_dict.keys()}")
+
         # Convert take_profit_1/2/3 to take_profit array
         if "take_profit" not in signal or not signal.get("take_profit"):
             tp_levels = []
