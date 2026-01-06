@@ -1,8 +1,8 @@
 # System Architecture - MT5 Elliott Wave Trading System
 
-**Last Updated**: 2026-01-04
-**Architecture Version**: 1.1
-**Current Phase**: Phase 8 Complete (Web Dashboard)
+**Last Updated**: 2026-01-06
+**Architecture Version**: 1.2
+**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation)
 
 ## Table of Contents
 
@@ -50,6 +50,16 @@
         └─────────────────────────┬──────────────────────┘
                                   │
         ┌─────────────────────────▼──────────────────────┐
+        │   RISK VALIDATION LAYER (NEW - Phase 9)        │
+        │   (risk_guard.py)                              │
+        │   ✓ Duplicate detection                        │
+        │   ✓ Direction conflict handling                │
+        │   ✓ Key level proximity validation             │
+        │   ✓ Exposure limits checking                   │
+        │   ✓ Account risk management                    │
+        └─────────────────────────┬──────────────────────┘
+                                  │
+        ┌─────────────────────────▼──────────────────────┐
         │   EXECUTION & MANAGEMENT LAYER                 │
         │   (trade_executor.py, trailing_stop_manager.py)│
         │   ✓ Position sizing                            │
@@ -91,6 +101,11 @@ telegram_bot.py
     ↓
 signal_parser.py ←─── claude_client.py
     ↓
+risk_guard.py ◄────── Pre-execution validation (NEW - Phase 9)
+    ├─→ mt5_client.py
+    ├─→ database.py
+    └─→ config.py
+    ↓
 trade_executor.py
     ├─→ mt5_client.py ─┐
     ├─→ database.py    │
@@ -102,6 +117,7 @@ trailing_stop_manager.py
     └─→ config.py
 
 All modules depend on config.py (Dependency Inversion Pattern)
+RiskGuard validates all signals before execution
 ```
 
 ### Message Flow Sequence

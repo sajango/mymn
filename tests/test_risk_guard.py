@@ -11,7 +11,15 @@ from src.risk_guard import (
     RiskGuard,
     get_risk_guard,
 )
-from src.signal_parser import SignalAction
+from src.signal_parser import (
+    ATRIndicator,
+    Indicators,
+    Signal,
+    SignalAction,
+    TakeProfit,
+    TradingSignal,
+    WaveAnalysis,
+)
 
 
 @pytest.fixture
@@ -27,6 +35,10 @@ def mock_settings():
     settings.max_position_size = 0.1
     settings.use_fixed_lots = False
     settings.fixed_lot_size = 0.03
+    # Key level proximity settings
+    settings.key_level_proximity_enabled = True
+    settings.key_level_proximity_atr_multiplier = 1.5
+    settings.key_level_proximity_min_pips = 10.0
     return settings
 
 
@@ -67,6 +79,9 @@ def sample_signal():
     signal.signal.entry_price = 2650.0
     signal.signal.stop_loss = 2640.0
     signal.signal.confidence = 75
+    signal.signal.take_profit = []
+    signal.wave_analysis = None
+    signal.indicators = None
     return signal
 
 
@@ -273,3 +288,346 @@ class TestSingleton:
 
         guard = get_risk_guard()
         assert isinstance(guard, RiskGuard)
+
+
+class TestKeyLevelProximity:
+    """Tests for _check_key_level_proximity validation."""
+
+    @pytest.fixture
+    def buy_signal_near_resistance(self):
+        """BUY signal placed too close to TP1 resistance."""
+        return TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2651.0, close_percent=40),
+                ],
+            ),
+            indicators=Indicators(
+                atr=ATRIndicator(value=2.5, regime="normal"),
+            ),
+        )
+
+    @pytest.fixture
+    def sell_signal_near_support(self):
+        """SELL signal placed too close to support."""
+        return TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.SELL,
+                entry_price=2650.0,
+                stop_loss=2660.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2649.0, close_percent=40),
+                ],
+            ),
+            indicators=Indicators(
+                atr=ATRIndicator(value=2.5, regime="normal"),
+            ),
+        )
+
+    def test_buy_too_close_to_resistance_rejected(
+        self, risk_guard, buy_signal_near_resistance
+    ):
+        """BUY within MIN_SAFE_DISTANCE of resistance is rejected."""
+        result = risk_guard._check_key_level_proximity(buy_signal_near_resistance)
+        assert result.passed is False
+        assert result.reason == RiskCheckReason.TOO_CLOSE_TO_KEY_LEVEL
+        assert "BUY too close to resistance" in result.message
+        assert "2651.0" in result.message
+
+    def test_sell_too_close_to_support_rejected(
+        self, risk_guard, sell_signal_near_support
+    ):
+        """SELL within MIN_SAFE_DISTANCE of support is rejected."""
+        result = risk_guard._check_key_level_proximity(sell_signal_near_support)
+        assert result.passed is False
+        assert result.reason == RiskCheckReason.TOO_CLOSE_TO_KEY_LEVEL
+        assert "SELL too close to support" in result.message
+
+    def test_buy_far_from_resistance_passes(self, risk_guard):
+        """BUY with sufficient distance from resistance passes."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2670.0, close_percent=40),
+                ],
+            ),
+            indicators=Indicators(
+                atr=ATRIndicator(value=2.5, regime="normal"),
+            ),
+        )
+        result = risk_guard._check_key_level_proximity(signal)
+        assert result.passed is True
+
+    def test_atr_based_distance_calculation(self, risk_guard):
+        """Distance threshold uses ATR × multiplier when available."""
+        # ATR=2.5, multiplier=1.5 → threshold=3.75
+        # min_pips=10 × 0.1 = 1.0
+        # max(1.0, 3.75) = 3.75
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2653.0, close_percent=40),
+                ],
+            ),
+            indicators=Indicators(
+                atr=ATRIndicator(value=2.5, regime="normal"),
+            ),
+        )
+        result = risk_guard._check_key_level_proximity(signal)
+        # Distance 3.0 < threshold 3.75 → rejected
+        assert result.passed is False
+
+    def test_fallback_to_min_pips_when_no_atr(self, risk_guard):
+        """Uses min_pips when ATR not available."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2652.0, close_percent=40),
+                ],
+            ),
+        )
+        result = risk_guard._check_key_level_proximity(signal)
+        # min_pips=10 × 0.1 = 1.0, distance=2.0 > 1.0 → passes
+        assert result.passed is True
+
+    def test_feature_disabled_always_passes(self, risk_guard, mock_settings):
+        """When feature disabled, all signals pass."""
+        mock_settings.key_level_proximity_enabled = False
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2650.01, close_percent=40),
+                ],
+            ),
+        )
+        result = risk_guard._check_key_level_proximity(signal)
+        assert result.passed is True
+
+    def test_no_entry_price_passes(self, risk_guard):
+        """Signals without entry price skip validation."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.NO_TRADE,
+                confidence=0,
+                reason="wait",
+            ),
+        )
+        result = risk_guard._check_key_level_proximity(signal)
+        assert result.passed is True
+
+    def test_no_key_levels_passes(self, risk_guard):
+        """Signals without TPs or wave analysis pass."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+            ),
+        )
+        result = risk_guard._check_key_level_proximity(signal)
+        assert result.passed is True
+
+    def test_invalidation_price_used_as_key_level(self, risk_guard):
+        """Wave invalidation price is considered as key level."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2680.0, close_percent=40),
+                ],
+            ),
+            wave_analysis=WaveAnalysis(
+                h4_trend="bullish",
+                current_wave="Wave 3",
+                invalidation_price=2651.0,  # Close resistance!
+            ),
+            indicators=Indicators(
+                atr=ATRIndicator(value=2.5, regime="normal"),
+            ),
+        )
+        result = risk_guard._check_key_level_proximity(signal)
+        assert result.passed is False
+
+
+class TestKeyLevelExtractor:
+    """Tests for _extract_key_levels helper."""
+
+    def test_tps_above_entry_are_resistance(self, risk_guard):
+        """TPs above entry are classified as resistance."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2660.0, close_percent=40),
+                    TakeProfit(level="TP2", price=2670.0, close_percent=35),
+                ],
+            ),
+        )
+        resistance, support = risk_guard._extract_key_levels(signal)
+        assert resistance == [2660.0, 2670.0]
+        assert 2640.0 in support
+
+    def test_sl_classified_by_direction(self, risk_guard):
+        """SL is support for BUY, resistance for SELL."""
+        buy_signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+            ),
+        )
+        sell_signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.SELL,
+                entry_price=2650.0,
+                stop_loss=2660.0,
+                confidence=75,
+            ),
+        )
+        _, buy_support = risk_guard._extract_key_levels(buy_signal)
+        sell_resistance, _ = risk_guard._extract_key_levels(sell_signal)
+        assert 2640.0 in buy_support
+        assert 2660.0 in sell_resistance
+
+    def test_levels_deduplicated(self, risk_guard):
+        """Duplicate level values are removed."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                stop_loss=2640.0,
+                confidence=75,
+                take_profit=[
+                    TakeProfit(level="TP1", price=2660.0, close_percent=40),
+                    TakeProfit(level="TP2", price=2660.0, close_percent=35),
+                ],
+            ),
+        )
+        resistance, _ = risk_guard._extract_key_levels(signal)
+        assert len(resistance) == 1
+        assert resistance[0] == 2660.0
+
+    def test_empty_levels_when_no_entry(self, risk_guard):
+        """Returns empty lists when no entry price."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.NO_TRADE,
+                confidence=0,
+            ),
+        )
+        resistance, support = risk_guard._extract_key_levels(signal)
+        assert resistance == []
+        assert support == []
+
+
+class TestSafeDistanceCalculation:
+    """Tests for _calculate_safe_distance helper."""
+
+    def test_uses_atr_when_larger(self, risk_guard):
+        """Uses ATR-based distance when larger than min pips."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                confidence=75,
+            ),
+            indicators=Indicators(
+                atr=ATRIndicator(value=5.0, regime="high"),
+            ),
+        )
+        # ATR=5.0 × 1.5 = 7.5 > min_pips=10 × 0.1 = 1.0
+        distance = risk_guard._calculate_safe_distance(signal)
+        assert distance == 7.5
+
+    def test_uses_min_pips_when_larger(self, risk_guard, mock_settings):
+        """Uses min pips when larger than ATR-based distance."""
+        mock_settings.key_level_proximity_min_pips = 50.0  # 50 × 0.1 = 5.0
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                confidence=75,
+            ),
+            indicators=Indicators(
+                atr=ATRIndicator(value=2.0, regime="low"),
+            ),
+        )
+        # ATR=2.0 × 1.5 = 3.0 < min_pips=50 × 0.1 = 5.0
+        distance = risk_guard._calculate_safe_distance(signal)
+        assert distance == 5.0
+
+    def test_fallback_when_no_indicators(self, risk_guard):
+        """Uses min pips when no indicators available."""
+        signal = TradingSignal(
+            timestamp="2026-01-06T07:00:00Z",
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=2650.0,
+                confidence=75,
+            ),
+        )
+        # No ATR → min_pips=10 × 0.1 = 1.0
+        distance = risk_guard._calculate_safe_distance(signal)
+        assert distance == 1.0

@@ -147,6 +147,17 @@ class Settings(BaseSettings):
         default=15, ge=1, le=120, description="Minutes to block duplicate signals"
     )
 
+    # Key Level Proximity Settings
+    key_level_proximity_enabled: bool = Field(
+        default=True, description="Enable key level proximity validation"
+    )
+    key_level_proximity_atr_multiplier: float = Field(
+        default=1.5, ge=0.5, le=5.0, description="ATR multiplier for safe distance"
+    )
+    key_level_proximity_min_pips: float = Field(
+        default=10.0, ge=1.0, le=100.0, description="Minimum safe distance in pips"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""

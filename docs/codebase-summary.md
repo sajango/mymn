@@ -1,8 +1,8 @@
 # MT5 Elliott Wave Trading System - Codebase Summary
 
-**Last Updated**: 2026-01-04
-**Current Phase**: Phase 7 Complete (Testing Infrastructure)
-**Total Repository**: 122,128 tokens, 510,693 characters, 50 files (includes tests)
+**Last Updated**: 2026-01-06
+**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation)
+**Total Repository**: 182,047 tokens, 781,719 characters, 84 files (includes dashboard and tests)
 
 ## Quick Overview
 
@@ -98,10 +98,32 @@ database.py        - SQLite trade and signal tracking
   - get_open_trades() - Retrieve active positions
 ```
 
-### Layer 6: Trade Execution & Management
+### Layer 6: Risk Validation (Phase 9 - NEW)
+```
+risk_guard.py      - Pre-execution risk validation (NEW)
+  - Duplicate signal detection (content hashing)
+  - Direction conflict handling (reject/close_first/hedge)
+  - Key level proximity validation (XAUUSD-specific)
+  - Concurrent position & lot exposure limits
+  - Account risk percentage management
+
+Key Components:
+  - RiskGuard class with async validate() method
+  - RiskCheckResult dataclass with detailed feedback
+  - RiskCheckReason enum (8 rejection codes)
+  - Signal-based key level extraction
+  - ATR-based safe distance calculation
+```
+
+Configuration (Phase 9 additions):
+- `key_level_proximity_enabled` (default: True)
+- `key_level_proximity_min_pips` (default: 10.0)
+- `key_level_proximity_atr_multiplier` (default: 1.5)
+
+### Layer 7: Trade Execution & Management
 ```
 trade_executor.py  - Orchestrates signal processing and execution
-  - Signal execution workflow
+  - Signal execution workflow (post-validation)
   - Position sizing with confidence multiplier
   - Error handling and retry logic
   - Paper trading mode enforcement
@@ -113,7 +135,7 @@ trailing_stop_manager.py - Trailing stop state machine
   - ATR-based trail distance (1.5x ATR)
 ```
 
-### Layer 7: User Interface
+### Layer 8: User Interface
 ```
 telegram_bot.py    - Telegram bot for notifications and control
   - /start command
@@ -148,27 +170,34 @@ pytest.ini                - Pytest configuration
 
 ## Data Flow
 
-### Trading Signal Execution Flow
+### Trading Signal Execution Flow (Updated Phase 9)
 ```
-1. Telegram /signal command
+1. Telegram /signal command (or Claude AI)
    ↓
 2. Signal parsing and validation
    ↓
-3. Signal stored in database (status: pending)
+3. RISK VALIDATION (NEW - Phase 9)
+   - Check duplicate within cooldown
+   - Handle opposite direction positions
+   - Validate key level proximity
+   - Check position/lot exposure limits
+   - Verify account risk percentage
+   ↓ [If all checks pass]
+4. Signal stored in database (status: pending)
    ↓
-4. Position size calculated (risk % × confidence multiplier)
+5. Position size calculated (risk % × confidence multiplier)
    ↓
-5. Market order placed with SL/TP1
+6. Market order placed with SL/TP1
    ↓
-6. Trade stored in database with ticket
+7. Trade stored in database with ticket
    ↓
-7. Trailing stop manager monitors position
+8. Trailing stop manager monitors position
    ↓
-8. Partial closes at TP2, TP3
+9. Partial closes at TP2, TP3
    ↓
-9. Trade closed or stopped out
+10. Trade closed or stopped out
    ↓
-10. Signal updated to 'executed' status
+11. Signal updated to 'executed' status
 ```
 
 ### Trailing Stop State Machine
@@ -201,6 +230,7 @@ Repeat trail logic
 | signal_parser.py | Signal models | test_signal_parser.py |
 | claude_client.py | AI integration | test_claude_client.py |
 | database.py | Trade persistence | test_database.py (16 tests) |
+| risk_guard.py | Risk validation (Phase 9) | test_risk_guard.py (16+ tests) |
 | trade_executor.py | Execution workflow | test_trade_executor.py (13 tests) |
 | trailing_stop_manager.py | Stop loss management | test_trailing_stop.py (16 tests) |
 | telegram_bot.py | User interface | test_telegram.py |

@@ -33,6 +33,7 @@ class RiskCheckReason(str, Enum):
     OPPOSITE_POSITION_EXISTS = "opposite_position_exists"
     CLOSE_FAILED = "close_failed"
     MT5_DISCONNECTED = "mt5_disconnected"
+    TOO_CLOSE_TO_KEY_LEVEL = "too_close_to_key_level"
 
 
 @dataclass
@@ -121,6 +122,7 @@ class RiskGuard:
         checks = [
             ("duplicate", self._check_duplicate),
             ("direction_conflict", self._check_direction_conflict),
+            ("key_level_proximity", self._check_key_level_proximity),
             ("exposure_limits", self._check_exposure_limits),
             ("account_risk", self._check_account_risk),
         ]
@@ -413,6 +415,181 @@ class RiskGuard:
         risk_pct = (risk_dollars / balance) * 100
 
         return min(risk_pct, self.config.risk_percent)  # Cap at configured risk
+
+    def _extract_key_levels(
+        self, signal: TradingSignal
+    ) -> tuple[list[float], list[float]]:
+        """Extract key levels from signal for proximity validation.
+
+        Args:
+            signal: Trading signal with wave analysis and TPs
+
+        Returns:
+            Tuple of (resistance_levels, support_levels)
+        """
+        resistance_levels: list[float] = []
+        support_levels: list[float] = []
+
+        s = signal.signal
+        entry = s.entry_price
+        is_buy = signal.is_buy
+
+        if entry is None:
+            return resistance_levels, support_levels
+
+        # Take profit levels based on position relative to entry
+        if s.take_profit:
+            for tp in s.take_profit:
+                if tp.price > entry:
+                    resistance_levels.append(tp.price)
+                else:
+                    support_levels.append(tp.price)
+
+        # Wave invalidation price
+        if signal.wave_analysis and signal.wave_analysis.invalidation_price:
+            inv_price = signal.wave_analysis.invalidation_price
+            if inv_price < entry:
+                support_levels.append(inv_price)
+            else:
+                resistance_levels.append(inv_price)
+
+        # Stop loss is a key level (support for BUY, resistance for SELL)
+        if s.stop_loss:
+            if is_buy:
+                support_levels.append(s.stop_loss)
+            else:
+                resistance_levels.append(s.stop_loss)
+
+        # Deduplicate and sort
+        resistance_levels = sorted(set(resistance_levels))
+        support_levels = sorted(set(support_levels), reverse=True)  # Descending
+
+        return resistance_levels, support_levels
+
+    def _check_key_level_proximity(self, signal: TradingSignal) -> RiskCheckResult:
+        """Check if entry is too close to conflicting key level.
+
+        Validates that:
+        - BUY orders have sufficient distance to nearest resistance
+        - SELL orders have sufficient distance to nearest support
+
+        Distance threshold = max(min_pips, ATR × multiplier)
+
+        Args:
+            signal: Trading signal
+
+        Returns:
+            RiskCheckResult
+        """
+        # Check if feature enabled
+        if not self.config.key_level_proximity_enabled:
+            return RiskCheckResult(passed=True)
+
+        s = signal.signal
+        entry = s.entry_price
+
+        # Skip if no entry price
+        if entry is None:
+            return RiskCheckResult(passed=True)
+
+        # Extract key levels
+        resistance_levels, support_levels = self._extract_key_levels(signal)
+
+        # Calculate safe distance
+        min_safe_distance = self._calculate_safe_distance(signal)
+
+        # Validate based on direction
+        if signal.is_buy:
+            # Check distance to nearest resistance
+            nearest_resistance = self._find_nearest_level_above(entry, resistance_levels)
+            if nearest_resistance is not None:
+                distance = nearest_resistance - entry
+                if distance < min_safe_distance:
+                    return RiskCheckResult(
+                        passed=False,
+                        reason=RiskCheckReason.TOO_CLOSE_TO_KEY_LEVEL,
+                        message=(
+                            f"BUY too close to resistance: "
+                            f"entry={entry:.2f}, resistance={nearest_resistance:.2f}, "
+                            f"distance={distance:.2f}, required={min_safe_distance:.2f}"
+                        ),
+                    )
+        else:  # SELL
+            # Check distance to nearest support
+            nearest_support = self._find_nearest_level_below(entry, support_levels)
+            if nearest_support is not None:
+                distance = entry - nearest_support
+                if distance < min_safe_distance:
+                    return RiskCheckResult(
+                        passed=False,
+                        reason=RiskCheckReason.TOO_CLOSE_TO_KEY_LEVEL,
+                        message=(
+                            f"SELL too close to support: "
+                            f"entry={entry:.2f}, support={nearest_support:.2f}, "
+                            f"distance={distance:.2f}, required={min_safe_distance:.2f}"
+                        ),
+                    )
+
+        return RiskCheckResult(passed=True)
+
+    def _calculate_safe_distance(self, signal: TradingSignal) -> float:
+        """Calculate minimum safe distance from key levels.
+
+        Returns max of:
+        - Fixed minimum pips converted to price
+        - ATR × multiplier (if ATR available)
+
+        Args:
+            signal: Trading signal with indicators
+
+        Returns:
+            Minimum safe distance in price units
+        """
+        # Fixed minimum (pips to price for XAUUSD: 1 pip = 0.1)
+        pip_size = 0.1  # XAUUSD pip size
+        min_distance = self.config.key_level_proximity_min_pips * pip_size
+
+        # ATR-based distance (if available)
+        if signal.indicators and signal.indicators.atr:
+            atr_value = signal.indicators.atr.value
+            atr_distance = atr_value * self.config.key_level_proximity_atr_multiplier
+            min_distance = max(min_distance, atr_distance)
+
+        return min_distance
+
+    def _find_nearest_level_above(
+        self, price: float, levels: list[float]
+    ) -> Optional[float]:
+        """Find nearest level above given price.
+
+        Args:
+            price: Reference price
+            levels: Sorted list of levels (ascending)
+
+        Returns:
+            Nearest level above price, or None if none exist
+        """
+        for level in levels:
+            if level > price:
+                return level
+        return None
+
+    def _find_nearest_level_below(
+        self, price: float, levels: list[float]
+    ) -> Optional[float]:
+        """Find nearest level below given price.
+
+        Args:
+            price: Reference price
+            levels: Sorted list of levels (descending)
+
+        Returns:
+            Nearest level below price, or None if none exist
+        """
+        for level in levels:
+            if level < price:
+                return level
+        return None
 
 
 # Lazy singleton

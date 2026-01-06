@@ -1,18 +1,19 @@
 # API Documentation - MT5 Elliott Wave Trading System
 
-**Last Updated**: 2026-01-04
-**Current Phase**: Phase 8 Complete (Web Dashboard)
+**Last Updated**: 2026-01-06
+**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation)
 
 ## Table of Contents
 
 1. [MT5 Client API](#mt5-client-api)
 2. [Signal Parser API](#signal-parser-api)
 3. [Database API](#database-api)
-4. [Trade Executor API](#trade-executor-api)
-5. [Trailing Stop Manager API](#trailing-stop-manager-api)
-6. [Claude Client API](#claude-client-api)
-7. [Telegram Bot API](#telegram-bot-api)
-8. [Dashboard API (Phase 8)](#dashboard-api-phase-8)
+4. [RiskGuard API](#riskguard-api)
+5. [Trade Executor API](#trade-executor-api)
+6. [Trailing Stop Manager API](#trailing-stop-manager-api)
+7. [Claude Client API](#claude-client-api)
+8. [Telegram Bot API](#telegram-bot-api)
+9. [Dashboard API (Phase 8)](#dashboard-api-phase-8)
 
 ---
 
@@ -673,6 +674,266 @@ logger.info(f"Cleaned up {deleted_count} old signal hashes")
 
 ---
 
+## RiskGuard API
+
+### Overview
+Pre-execution risk validation module that validates trading signals before execution to prevent duplicate orders, direction conflicts, position accumulation, account risk over-exposure, and entry point proximity to key technical levels.
+
+**Module**: `src/risk_guard.py`
+
+### Class: `RiskGuard`
+
+```python
+class RiskGuard:
+    async def validate(signal: TradingSignal) -> RiskCheckResult
+    def _check_duplicate(signal: TradingSignal) -> RiskCheckResult
+    def _check_direction_conflict(signal: TradingSignal) -> RiskCheckResult
+    def _check_key_level_proximity(signal: TradingSignal) -> RiskCheckResult
+    def _check_exposure_limits(signal: TradingSignal) -> RiskCheckResult
+    def _check_account_risk(signal: TradingSignal) -> RiskCheckResult
+```
+
+### Enums
+
+#### `RiskCheckReason`
+Rejection reason codes for failed risk checks:
+```python
+DUPLICATE_SIGNAL = "duplicate_signal"
+MAX_POSITIONS_REACHED = "max_positions_reached"
+MAX_LOTS_EXCEEDED = "max_lots_exceeded"
+ACCOUNT_RISK_EXCEEDED = "account_risk_exceeded"
+OPPOSITE_POSITION_EXISTS = "opposite_position_exists"
+CLOSE_FAILED = "close_failed"
+MT5_DISCONNECTED = "mt5_disconnected"
+TOO_CLOSE_TO_KEY_LEVEL = "too_close_to_key_level"
+```
+
+### Data Classes
+
+#### `RiskCheckResult`
+Result of a risk validation check.
+
+**Fields**:
+```python
+passed: bool                          # True if check passed
+reason: Optional[RiskCheckReason]     # Rejection reason if failed
+message: str = ""                     # Detailed message
+action_taken: str = ""                # Action taken (e.g., "closed_position_1234")
+```
+
+### Methods
+
+##### `async validate(signal: TradingSignal) -> RiskCheckResult`
+Run all risk checks on signal in priority order.
+
+**Parameters**:
+- `signal` (TradingSignal): Trading signal to validate
+
+**Returns**: `RiskCheckResult` with pass/fail and reason
+
+**Check Order**:
+1. MT5 connection status
+2. Duplicate detection (within cooldown)
+3. Direction conflict handling
+4. Key level proximity validation
+5. Exposure limits (position count, total lots)
+6. Account risk exposure
+
+**Example**:
+```python
+guard = get_risk_guard()
+result = await guard.validate(signal)
+if not result.passed:
+    logger.warning(f"Rejected: {result.reason.value} - {result.message}")
+else:
+    await executor.execute_signal(signal)
+```
+
+---
+
+##### `_check_duplicate(signal: TradingSignal) -> RiskCheckResult`
+Detect duplicate signals within cooldown period using content hashing.
+
+**Process**:
+1. Generate MD5 hash from signal content (symbol, action, entry, SL)
+2. Check database for recent hashes within cooldown window
+3. Save new hash for future checks
+4. Maintain in-memory fallback cache
+
+**Configuration**:
+- `duplicate_cooldown_minutes`: Minutes to block duplicate signals (default: 15)
+
+**Returns**: `RiskCheckResult(passed=False, reason=DUPLICATE_SIGNAL)` if duplicate found
+
+**Example**:
+```python
+# First signal passes
+result = guard._check_duplicate(signal)
+assert result.passed
+
+# Identical signal within 15 minutes rejected
+result = guard._check_duplicate(signal)
+assert not result.passed
+assert result.reason == RiskCheckReason.DUPLICATE_SIGNAL
+```
+
+---
+
+##### `_check_direction_conflict(signal: TradingSignal) -> RiskCheckResult`
+Handle opposite direction positions using configured policy.
+
+**Policies**:
+- `reject`: Block new signal if opposite exists
+- `close_first`: Close existing position, then allow new
+- `hedge`: Allow both if within exposure limits
+
+**Configuration**:
+- `opposite_position_policy`: Policy for handling conflicts (default: "close_first")
+
+**Returns**:
+- `RiskCheckResult(passed=False, reason=OPPOSITE_POSITION_EXISTS)` if reject policy
+- `RiskCheckResult(passed=True, action_taken="closed_positions:...")` if close_first
+- `RiskCheckResult(passed=True)` if hedge policy
+
+**Example**:
+```python
+# Policy: close_first
+# If SELL signal and existing BUY position found
+result = guard._check_direction_conflict(sell_signal)
+# Returns passed=True with action_taken="closed_positions:[12345]"
+```
+
+---
+
+##### `_check_key_level_proximity(signal: TradingSignal) -> RiskCheckResult`
+Validate entry point is safely distant from conflicting key levels.
+
+**Key Levels Extracted From**:
+- Take profit levels (resistance for BUY, support for SELL)
+- Wave invalidation price
+- Stop loss price
+
+**Safe Distance Calculation**:
+```
+safe_distance = max(
+    min_pips × pip_size,
+    ATR × atr_multiplier
+)
+```
+
+**Configuration**:
+- `key_level_proximity_enabled`: Enable/disable validation (default: True)
+- `key_level_proximity_min_pips`: Fixed minimum distance (default: 10.0 pips)
+- `key_level_proximity_atr_multiplier`: ATR multiplier (default: 1.5)
+
+**Returns**: `RiskCheckResult(passed=False, reason=TOO_CLOSE_TO_KEY_LEVEL)` if entry too close
+
+**Validation Logic**:
+- **BUY orders**: Entry must be >= (nearest_resistance - safe_distance)
+- **SELL orders**: Entry must be <= (nearest_support + safe_distance)
+
+**Example**:
+```python
+# BUY signal with entry at 2650.0
+# Nearest resistance at 2655.0
+# Safe distance required: 10 pips = 1.0 price units
+# Distance available: 5.0 pips = 0.5 price units
+# Result: REJECTED (too close to resistance)
+
+result = guard._check_key_level_proximity(buy_signal)
+assert not result.passed
+assert result.reason == RiskCheckReason.TOO_CLOSE_TO_KEY_LEVEL
+```
+
+---
+
+##### `_check_exposure_limits(signal: TradingSignal) -> RiskCheckResult`
+Validate concurrent position count and total lot exposure.
+
+**Checks**:
+1. Current position count < max_concurrent_positions
+2. (Current total lots + proposed volume) <= max_total_lots
+
+**Configuration**:
+- `max_concurrent_positions`: Max open positions (default: 2)
+- `max_total_lots`: Max total lot exposure (default: 0.2)
+- `max_position_size`: Max single position size (default: 0.1)
+
+**Returns**:
+- `RiskCheckResult(passed=False, reason=MAX_POSITIONS_REACHED)` if position limit hit
+- `RiskCheckResult(passed=False, reason=MAX_LOTS_EXCEEDED)` if lot limit hit
+- `RiskCheckResult(passed=True)` if within limits
+
+---
+
+##### `_check_account_risk(signal: TradingSignal) -> RiskCheckResult`
+Validate total account risk exposure.
+
+**Calculation**:
+```
+current_risk = sum(position_risk for each open position)
+proposed_risk = signal risk_percent
+total_risk = current_risk + proposed_risk
+
+if total_risk > max_account_risk_percent: REJECT
+```
+
+**Configuration**:
+- `max_account_risk_percent`: Max account risk (default: 3.0%)
+- `risk_percent`: Risk per trade (default: 1.5%)
+
+**Returns**: `RiskCheckResult(passed=False, reason=ACCOUNT_RISK_EXCEEDED)` if limit exceeded
+
+---
+
+### Usage Pattern
+
+```python
+from src.risk_guard import get_risk_guard
+
+# Get singleton instance
+guard = get_risk_guard()
+
+# Validate before execution
+result = await guard.validate(signal)
+
+if result.passed:
+    # All checks passed
+    await executor.execute_signal(signal)
+    logger.info("Signal passed all risk checks")
+else:
+    # Risk check failed
+    logger.warning(f"Signal rejected: {result.reason.value}")
+    logger.warning(result.message)
+    # Signal is not executed
+```
+
+---
+
+### Configuration Section in .env
+
+```bash
+# RiskGuard: Duplicate Detection
+DUPLICATE_COOLDOWN_MINUTES=15
+
+# RiskGuard: Direction Conflict Policy
+OPPOSITE_POSITION_POLICY=close_first  # "reject", "close_first", or "hedge"
+
+# RiskGuard: Position & Lot Limits
+MAX_CONCURRENT_POSITIONS=2
+MAX_TOTAL_LOTS=0.2
+
+# RiskGuard: Account Risk
+MAX_ACCOUNT_RISK_PERCENT=3.0
+
+# RiskGuard: Key Level Proximity (NEW)
+KEY_LEVEL_PROXIMITY_ENABLED=true
+KEY_LEVEL_PROXIMITY_MIN_PIPS=10.0
+KEY_LEVEL_PROXIMITY_ATR_MULTIPLIER=1.5
+```
+
+---
+
 ## Trade Executor API
 
 ### Overview
@@ -1087,20 +1348,29 @@ MIN_CONFIDENCE = 50             # < 50% = skip
 
 ## Changelog
 
-### Phase 5 Additions (2026-01-04)
+### Phase 9 Additions (2026-01-06)
+- RiskGuard API complete documentation
+- Key level proximity validation
+- 3 new configuration fields for proximity detection
+- 16 new test cases for key level proximity
+- Enhanced RiskCheckReason enum with TOO_CLOSE_TO_KEY_LEVEL
+- Support for signal-based key level extraction
+- ATR-based safe distance calculation
+
+### Phase 8 (2026-01-04)
+- Web Dashboard with FastAPI and React
+- 11 REST endpoints for analytics
+- Performance statistics and equity curves
+- Confidence analysis and time-based heatmaps
+
+### Phase 5-7 (Previous)
 - Trade execution with SL/TP
 - Position sizing with confidence multiplier
 - Trailing stop state machine
 - Database schema with trade tracking
 - Paper trading mode
-
-### Phase 4 (Previous)
-- Telegram bot
-- Signal notifications
-
-### Phase 3 (Previous)
-- Claude integration
-- Signal parsing
+- Telegram bot with signal notifications
+- Claude integration and signal parsing
 
 ---
 
