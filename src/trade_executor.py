@@ -15,6 +15,7 @@ from src.config import get_settings
 from src.database import Database, SignalStatus, get_database
 from src.mt5_client import MT5Client, mt5_client
 from src.risk_guard import RiskGuard, get_risk_guard
+from src.signal_filter import SignalConsistencyFilter, get_signal_filter
 from src.signal_parser import SignalAction, TradingSignal
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,13 @@ class TradeExecutor:
             self._risk_guard = get_risk_guard()
         return self._risk_guard
 
+    @property
+    def signal_filter(self) -> SignalConsistencyFilter:
+        """Lazy load signal filter."""
+        if not hasattr(self, "_signal_filter") or self._signal_filter is None:
+            self._signal_filter = get_signal_filter()
+        return self._signal_filter
+
     async def execute_signal(self, signal: TradingSignal) -> dict:
         """Execute trading signal.
 
@@ -90,6 +98,35 @@ class TradeExecutor:
                 "status": "skipped",
                 "reason": "not_tradeable",
                 "action": signal.signal.action.value,
+            }
+
+        # Signal consistency check (before risk validation)
+        filter_result = self.signal_filter.check(signal)
+
+        if not filter_result.passed:
+            logger.warning(
+                f"Signal filtered: {filter_result.reason.value} - "
+                f"{filter_result.message}"
+            )
+
+            # Save signal as skipped
+            signal_id = self.db.save_signal(signal)
+            self.db.update_signal_status(signal_id, SignalStatus.SKIPPED)
+
+            # Log to skipped_signals for analytics
+            self.db.save_skipped_signal(
+                reason=f"filter:{filter_result.reason.value}",
+                details=filter_result.message,
+                confidence=signal.signal.confidence,
+            )
+
+            return {
+                "status": "filtered",
+                "signal_id": signal_id,
+                "reason": filter_result.reason.value,
+                "message": filter_result.message,
+                "previous_action": filter_result.previous_action,
+                "minutes_since_last": filter_result.minutes_since_last,
             }
 
         # Risk validation before execution

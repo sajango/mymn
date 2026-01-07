@@ -517,17 +517,46 @@ def _normalize_signal_data(data: dict) -> dict:
                 signal["action"] = direction_to_action[action_val]
                 logger.debug(f"Normalized: action value {original} -> {signal['action']}")
 
-        # Convert confidence from 0-1 float to 0-100 int
+        # Convert confidence from 0-1 float to 0-100 int, or string to int
         if "confidence" in signal:
             conf = signal["confidence"]
             if isinstance(conf, float) and 0 <= conf <= 1:
                 signal["confidence"] = int(conf * 100)
                 logger.debug(f"Normalized: confidence {conf} -> {signal['confidence']}")
+            elif isinstance(conf, str):
+                # Map string confidence levels to int values
+                confidence_map = {
+                    "HIGH": 80,
+                    "MEDIUM": 60,
+                    "LOW": 40,
+                    "VERY_HIGH": 90,
+                    "VERY_LOW": 20,
+                }
+                conf_upper = conf.upper().replace(" ", "_")
+                if conf_upper in confidence_map:
+                    signal["confidence"] = confidence_map[conf_upper]
+                    logger.debug(f"Normalized: confidence '{conf}' -> {signal['confidence']}")
 
         # Map risk_reward_ratio -> risk_reward
         if "risk_reward_ratio" in signal and "risk_reward" not in signal:
             signal["risk_reward"] = signal.pop("risk_reward_ratio")
             logger.debug("Normalized: risk_reward_ratio -> risk_reward")
+
+        # Handle risk_reward as ratio string -> extract float (e.g., "1:3.5" -> 3.5)
+        if "risk_reward" in signal and isinstance(signal["risk_reward"], str):
+            rr_str = signal["risk_reward"]
+            if ":" in rr_str:
+                try:
+                    parts = rr_str.split(":")
+                    if len(parts) == 2:
+                        risk_part = float(parts[0].strip())
+                        reward_part = float(parts[1].strip())
+                        if risk_part > 0:
+                            signal["risk_reward"] = round(reward_part / risk_part, 2)
+                            logger.debug(f"Normalized: risk_reward '{rr_str}' -> {signal['risk_reward']}")
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"Could not parse risk_reward ratio string '{rr_str}': {e}")
+                    signal["risk_reward"] = None
 
         # Handle risk_reward as dict -> extract float
         # Claude may return: {'risk_pips': 25.74, 'rr_ratio_tp1': 1.27, 'rr_ratio_tp2': 2.2, ...}

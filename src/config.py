@@ -158,6 +158,20 @@ class Settings(BaseSettings):
         default=10.0, ge=1.0, le=100.0, description="Minimum safe distance in pips"
     )
 
+    # Signal Consistency Filter Settings
+    direction_change_cooldown_minutes: int = Field(
+        default=60, ge=15, le=240,
+        description="Minutes before allowing direction change"
+    )
+    direction_change_min_confidence: int = Field(
+        default=75, ge=50, le=100,
+        description="Minimum confidence required for direction reversal"
+    )
+    rapid_flip_threshold_minutes: int = Field(
+        default=30, ge=10, le=120,
+        description="Minutes threshold for rapid flip-flop detection"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""

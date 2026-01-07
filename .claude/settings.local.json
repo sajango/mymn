@@ -11,7 +11,15 @@
       "Bash(cat:*)",
       "Bash(python:*)",
       "Bash(git -C \"D:\\\\ws\\\\mymn\" add -A)",
-      "Bash(git -C \"D:\\\\ws\\\\mymn\" diff --cached --stat)"
+      "Bash(git -C \"D:\\\\ws\\\\mymn\" diff --cached --stat)",
+      "Bash(git -C \"D:\\\\ws\\\\mymn\" status)",
+      "Bash(~/.claude/skills/.venv/Scripts/python.exe:*)",
+      "Skill(fix:fast)",
+      "Bash(sqlite3:*)",
+      "Bash(cd:*)",
+      "Bash(dir:*)",
+      "Bash(pytest:*)",
+      "Bash(ruff check:*)"
     ]
   }
 }

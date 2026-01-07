@@ -1,8 +1,8 @@
 # System Architecture - MT5 Elliott Wave Trading System
 
-**Last Updated**: 2026-01-06
-**Architecture Version**: 1.2
-**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation)
+**Last Updated**: 2026-01-07
+**Architecture Version**: 1.3
+**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation) + Phase 1 (Signal Consistency Filter)
 
 ## Table of Contents
 
@@ -51,7 +51,8 @@
                                   │
         ┌─────────────────────────▼──────────────────────┐
         │   RISK VALIDATION LAYER (NEW - Phase 9)        │
-        │   (risk_guard.py)                              │
+        │   (risk_guard.py, signal_filter.py)            │
+        │   ✓ Signal consistency (no rapid flip-flops)   │
         │   ✓ Duplicate detection                        │
         │   ✓ Direction conflict handling                │
         │   ✓ Key level proximity validation             │
@@ -100,6 +101,10 @@
 telegram_bot.py
     ↓
 signal_parser.py ←─── claude_client.py
+    ↓
+signal_filter.py ◄──── Signal consistency check (Phase 1)
+    ├─→ database.py
+    └─→ config.py
     ↓
 risk_guard.py ◄────── Pre-execution validation (NEW - Phase 9)
     ├─→ mt5_client.py
@@ -162,6 +167,19 @@ Signal Input (Telegram)
     │       │ ✓ Entry, SL, TP levels
     │       │ ✓ Confidence (0-100)
     │       └─→ TradingSignal object
+    │
+    ├─→ Signal Consistency Filter (Phase 1)
+    │       │ ✓ Check direction consistency
+    │       │ ✓ Enforce cooldown on reversals
+    │       │ ✓ Require high confidence for flips
+    │       │ ✓ Detect rapid flip-flop patterns
+    │       └─→ FilterResult (pass/fail with reason)
+    │
+    ├─→ Risk Guard (Phase 9)
+    │       │ ✓ Check duplicate signals
+    │       │ ✓ Validate key level proximity
+    │       │ ✓ Check exposure limits
+    │       └─→ Validation result
     │
     ├─→ Trade Executor
     │       │ ✓ Check minimum confidence
@@ -448,6 +466,37 @@ trades = executor.db.get_open_trades()
 
 ---
 
+### 7. Hysteresis Pattern (Signal Consistency Filter)
+
+```python
+# signal_filter.py - Prevent rapid direction reversals
+class SignalConsistencyFilter:
+    def check(self, signal):
+        # Same direction? -> ALLOW
+        # Direction change + in cooldown period? -> BLOCK
+        # Direction change + low confidence? -> BLOCK
+        # Direction change + high confidence + cooldown passed? -> ALLOW
+        # Rapid flip-flop pattern (A->B->A)? -> BLOCK
+```
+
+**Logic Flow**:
+1. Get recent tradeable signals from database
+2. Compare current signal direction to last signal
+3. If same direction -> pass
+4. If direction change:
+   - Check if within cooldown period (60 min default)
+   - Check if confidence >= min threshold (75% default)
+   - Detect flip-flop pattern (A->B->A within 30 min)
+5. Return FilterResult with reason if blocked
+
+**Benefits**:
+- Prevents whipsaw trades from signal noise
+- Hysteresis prevents decision oscillation
+- Configuration-driven thresholds
+- Clear rejection reasons for logging
+
+---
+
 ## Module Dependencies
 
 ### Dependency Hierarchy
@@ -460,6 +509,8 @@ Level 2 (Business Logic)
     ├─ trade_executor.py
     ├─ trailing_stop_manager.py
     ├─ signal_parser.py
+    ├─ signal_filter.py        (NEW - Phase 1)
+    ├─ risk_guard.py           (NEW - Phase 9)
     └─ claude_client.py
 
 Level 1 (Data & Broker)
@@ -940,6 +991,7 @@ tests/
 ├─ test_config.py              (Configuration)
 ├─ test_mt5.py                 (MT5 Client)
 ├─ test_signal_parser.py       (Signal Processing)
+├─ test_signal_filter.py       (Consistency Filter - NEW Phase 1)
 ├─ test_claude_client.py       (AI Integration)
 ├─ test_database.py            (Persistence - 16 tests)
 ├─ test_trade_executor.py      (Execution - 13 tests)
@@ -947,11 +999,12 @@ tests/
 └─ test_telegram.py            (UI)
 
 Coverage:
+├─ signal_filter.py   92%
 ├─ database.py        96%
 ├─ trade_executor.py  87%
 └─ trailing_stop.py   84%
 
-Total: 45/45 passing (100%)
+Total: 50/50 passing (100%)
 ```
 
 ### Test Strategy

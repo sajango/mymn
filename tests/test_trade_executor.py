@@ -8,6 +8,7 @@ import pytest
 
 from src.database import Database, SignalStatus
 from src.risk_guard import RiskCheckResult
+from src.signal_filter import FilterResult
 from src.signal_parser import (
     Signal,
     SignalAction,
@@ -58,11 +59,21 @@ def mock_risk_guard():
 
 
 @pytest.fixture
-def executor(mock_mt5, temp_db, mock_settings, mock_risk_guard):
+def mock_signal_filter():
+    """Create mock signal filter that passes all checks."""
+    mock = MagicMock()
+    mock.check.return_value = FilterResult(passed=True, message="test_bypass")
+    return mock
+
+
+@pytest.fixture
+def executor(mock_mt5, temp_db, mock_settings, mock_risk_guard, mock_signal_filter):
     """Create executor with mocks."""
-    return TradeExecutor(
+    exec = TradeExecutor(
         mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard
     )
+    exec._signal_filter = mock_signal_filter
+    return exec
 
 
 @pytest.fixture

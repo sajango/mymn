@@ -332,6 +332,134 @@ class TestTradingSignalModel:
             TradingSignal.model_validate(minimal_signal_data)
 
 
+class TestNormalizeSignalData:
+    """Test _normalize_signal_data function."""
+
+    def test_normalize_risk_reward_dict_to_float(self) -> None:
+        """Test risk_reward dict is normalized to float using rr_ratio_tp1."""
+        response = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "BUY",
+                "confidence": 72,
+                "entry_price": 4453.44,
+                "stop_loss": 4427.70,
+                "risk_reward": {
+                    "risk_pips": 25.74,
+                    "reward_pips_tp1": 32.56,
+                    "reward_pips_tp2": 56.56,
+                    "reward_pips_tp3": 86.56,
+                    "rr_ratio_tp1": 1.27,
+                    "rr_ratio_tp2": 2.2,
+                    "rr_ratio_tp3": 3.36
+                }
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.signal.risk_reward == 1.27  # Extracted from rr_ratio_tp1
+
+    def test_normalize_risk_reward_dict_fallback_calculation(self) -> None:
+        """Test risk_reward calculated from pips when rr_ratio not available."""
+        response = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "BUY",
+                "confidence": 72,
+                "risk_reward": {
+                    "risk_pips": 25.0,
+                    "reward_pips_tp1": 50.0
+                }
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.signal.risk_reward == 2.0  # 50/25 = 2.0
+
+    def test_normalize_confidence_string_to_int(self) -> None:
+        """Test confidence string (HIGH/MEDIUM/LOW) is normalized to int."""
+        response = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "BUY",
+                "confidence": "MEDIUM",
+                "entry_price": 4464.17
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.signal.confidence == 60  # MEDIUM -> 60
+
+    def test_normalize_confidence_string_high(self) -> None:
+        """Test HIGH confidence string maps to 80."""
+        response = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {"action": "BUY", "confidence": "HIGH"}
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.signal.confidence == 80
+
+    def test_normalize_confidence_string_low(self) -> None:
+        """Test LOW confidence string maps to 40."""
+        response = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {"action": "SELL", "confidence": "LOW"}
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.signal.confidence == 40
+
+    def test_normalize_risk_reward_ratio_string(self) -> None:
+        """Test risk_reward ratio string (1:3.5) is normalized to float."""
+        response = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "SELL",
+                "confidence": 60,
+                "risk_reward": "1:3.5"
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.signal.risk_reward == 3.5  # 3.5/1 = 3.5
+
+    def test_normalize_risk_reward_ratio_string_with_decimals(self) -> None:
+        """Test risk_reward ratio with decimals on both sides."""
+        response = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "BUY",
+                "confidence": 70,
+                "risk_reward": "1.5:4.5"
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.signal.risk_reward == 3.0  # 4.5/1.5 = 3.0
+
+
 class TestParseTradingSignal:
     """Test parse_trading_signal function."""
 
