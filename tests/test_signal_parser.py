@@ -459,6 +459,90 @@ class TestNormalizeSignalData:
         assert signal is not None
         assert signal.signal.risk_reward == 3.0  # 4.5/1.5 = 3.0
 
+    def test_normalize_wave_position_from_elliott_wave_analysis(self) -> None:
+        """Test extraction of wave_position from signal.elliott_wave_analysis."""
+        response = '''```json
+        {
+            "timestamp": "2026-01-07T00:00:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "BUY",
+                "confidence": 75,
+                "elliott_wave_analysis": {
+                    "current_wave": "Wave 3 impulse in progress",
+                    "h4_structure": "Bullish trend continuation",
+                    "primary_count": {
+                        "current_wave": "3",
+                        "wave_position": "Impulse wave in progress"
+                    }
+                }
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.wave_analysis is not None
+        assert signal.wave_analysis.wave_position is not None
+        assert "Wave 3" in signal.wave_analysis.wave_position
+
+    def test_normalize_wave_position_preserves_existing(self) -> None:
+        """Test that existing wave_analysis.wave_position is preserved."""
+        response = '''```json
+        {
+            "timestamp": "2026-01-07T00:00:00Z",
+            "symbol": "XAUUSD",
+            "signal": {"action": "SELL", "confidence": 70},
+            "wave_analysis": {
+                "wave_position": "wave_5_complete",
+                "h4_trend": "bullish",
+                "current_wave": "Wave 5 complete"
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.wave_analysis is not None
+        assert signal.wave_analysis.wave_position == "wave_5_complete"
+
+    def test_normalize_wave_position_from_current_wave(self) -> None:
+        """Test wave_position is created from current_wave if missing."""
+        response = '''```json
+        {
+            "timestamp": "2026-01-07T00:00:00Z",
+            "symbol": "XAUUSD",
+            "signal": {"action": "BUY", "confidence": 65},
+            "wave_analysis": {
+                "current_wave": "Corrective Wave B",
+                "h4_trend": "bearish"
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.wave_analysis is not None
+        assert signal.wave_analysis.wave_position == "Corrective Wave B"
+
+    def test_normalize_wave_position_with_h4_trend(self) -> None:
+        """Test h4_trend extraction from elliott_wave_analysis."""
+        response = '''```json
+        {
+            "timestamp": "2026-01-07T00:00:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "BUY",
+                "confidence": 75,
+                "elliott_wave_analysis": {
+                    "current_wave": "Wave 4",
+                    "h4_structure": "Bullish continuation expected"
+                }
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(response)
+        assert signal is not None
+        assert signal.wave_analysis is not None
+        assert signal.wave_analysis.h4_trend == "bullish"
+
 
 class TestParseTradingSignal:
     """Test parse_trading_signal function."""

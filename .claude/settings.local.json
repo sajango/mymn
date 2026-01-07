@@ -19,7 +19,8 @@
       "Bash(cd:*)",
       "Bash(dir:*)",
       "Bash(pytest:*)",
-      "Bash(ruff check:*)"
+      "Bash(ruff check:*)",
+      "mcp__sequential-thinking__sequentialthinking"
     ]
   }
 }

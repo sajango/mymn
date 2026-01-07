@@ -453,6 +453,51 @@ signal = parse_signal({
 })
 ```
 
+#### `parse_trading_signal(response: str) -> Optional[TradingSignal]`
+End-to-end signal parsing with data normalization.
+
+**Parameters**:
+- `response` (str): Claude API response containing trading signal
+
+**Returns**: `TradingSignal` object or `None` if parsing fails
+
+**Data Normalization** (Phase 2):
+The parser automatically handles multiple Claude response formats:
+
+1. **Elliott Wave Analysis Extraction**:
+   - Extracts `wave_position` from `signal.elliott_wave_analysis`
+   - Supports multiple source formats:
+     - `elliott_wave_analysis.wave_position`
+     - `elliott_wave_analysis.current_wave`
+     - `elliott_wave_analysis.primary_count.wave_position`
+   - Extracts H4 trend direction (bullish/bearish)
+   - Creates `wave_analysis` object with normalized data
+
+2. **Fallback Logic**:
+   - If `wave_analysis.wave_position` missing, uses `current_wave`
+   - Converts all wave data to string format
+   - Preserves existing `wave_analysis` if provided
+
+**Example** (Multi-format support):
+```python
+# Format A: wave_position at top level
+response1 = '''```json
+{"timestamp": "...", "symbol": "XAUUSD",
+ "signal": {"action": "BUY", "elliott_wave_analysis": {"wave_position": "Wave 3"}}}
+```'''
+
+# Format B: wave_position in primary_count
+response2 = '''```json
+{"timestamp": "...", "symbol": "XAUUSD",
+ "signal": {"action": "BUY",
+   "elliott_wave_analysis": {"primary_count": {"wave_position": "Impulse wave"}}}}
+```'''
+
+signal1 = parse_trading_signal(response1)
+signal2 = parse_trading_signal(response2)
+# Both normalize to: signal.wave_analysis.wave_position
+```
+
 ---
 
 ## Database API

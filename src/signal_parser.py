@@ -582,6 +582,40 @@ def _normalize_signal_data(data: dict) -> dict:
                 signal["risk_reward"] = None
                 logger.warning(f"Could not extract risk_reward from dict: {rr_dict.keys()}")
 
+        # Extract wave_position from elliott_wave_analysis
+        # Claude may output wave data in signal.elliott_wave_analysis instead of wave_analysis
+        elliott_wave = signal.get("elliott_wave_analysis", {})
+        if isinstance(elliott_wave, dict) and elliott_wave and "wave_analysis" not in data:
+            wave_analysis = {}
+
+            # Try multiple locations for wave position
+            wave_position = (
+                elliott_wave.get("wave_position") or
+                elliott_wave.get("current_wave") or
+                elliott_wave.get("primary_count", {}).get("current_wave") or
+                elliott_wave.get("primary_count", {}).get("wave_position")
+            )
+
+            if wave_position:
+                wave_analysis["wave_position"] = str(wave_position)
+                logger.debug(f"Normalized: extracted wave_position: {wave_position}")
+
+            # Extract h4_trend if available
+            h4_structure = elliott_wave.get("h4_structure", "")
+            if h4_structure and "bullish" in str(h4_structure).lower():
+                wave_analysis["h4_trend"] = "bullish"
+            elif h4_structure and "bearish" in str(h4_structure).lower():
+                wave_analysis["h4_trend"] = "bearish"
+
+            # Extract current_wave description
+            current_wave = elliott_wave.get("current_wave", "")
+            if current_wave:
+                wave_analysis["current_wave"] = str(current_wave)
+
+            if wave_analysis:
+                data["wave_analysis"] = wave_analysis
+                logger.debug("Normalized: created wave_analysis from elliott_wave_analysis")
+
         # Convert take_profit_1/2/3 to take_profit array
         if "take_profit" not in signal or not signal.get("take_profit"):
             tp_levels = []
@@ -628,6 +662,16 @@ def _normalize_signal_data(data: dict) -> dict:
             signal["take_profit"] = normalized_tps
 
         data["signal"] = signal
+
+    # Normalize wave_analysis if present but missing wave_position
+    wave_analysis = data.get("wave_analysis", {})
+    if isinstance(wave_analysis, dict) and wave_analysis:
+        if "wave_position" not in wave_analysis or wave_analysis.get("wave_position") is None:
+            current_wave = wave_analysis.get("current_wave", "")
+            if current_wave:
+                wave_analysis["wave_position"] = str(current_wave)
+                logger.debug(f"Normalized: wave_position from current_wave: {current_wave}")
+        data["wave_analysis"] = wave_analysis
 
     return data
 
