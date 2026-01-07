@@ -347,3 +347,55 @@ class TestTradeClose:
         assert summary["wins"] == 1
         assert summary["losses"] == 1
         assert summary["total_profit"] == 50.00
+
+
+class TestSignalContext:
+    """Test signal context retrieval for Claude prompt."""
+
+    def test_get_signal_context_empty_database(self, temp_db):
+        """Test signal context with no signals."""
+        context = temp_db.get_signal_context()
+        assert context is None
+
+    def test_get_signal_context_with_signals(self, temp_db, sample_signal):
+        """Test signal context retrieval with existing signals."""
+        # Save multiple BUY signals
+        temp_db.save_signal(sample_signal)
+        temp_db.save_signal(sample_signal)
+
+        context = temp_db.get_signal_context(limit=3)
+
+        assert context is not None
+        assert context["last_action"] == "BUY"  # Most recent
+        assert "BUY" in context["recent_sequence"]
+        assert context["last_confidence"] == 75
+        assert "minutes_since_last" in context
+        assert context["wave_position"] is None  # sample_signal has no wave_analysis
+
+    def test_get_signal_context_only_trades_buy_sell(self, temp_db):
+        """Test that context only includes BUY/SELL signals."""
+        # Manually insert a NO_TRADE signal
+        with temp_db._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO signals (timestamp, symbol, action, confidence)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("2026-01-07T10:00:00Z", "XAUUSD", "NO_TRADE", 50),
+            )
+            conn.commit()
+
+        context = temp_db.get_signal_context()
+        assert context is None  # Should not include NO_TRADE
+
+    def test_get_signal_context_respects_limit(self, temp_db, sample_signal):
+        """Test that context respects limit parameter."""
+        # Save 5 signals
+        for _ in range(5):
+            temp_db.save_signal(sample_signal)
+
+        context = temp_db.get_signal_context(limit=2)
+
+        # Sequence should only have 2 entries
+        arrows = context["recent_sequence"].count("→")
+        assert arrows == 1  # 2 items = 1 arrow

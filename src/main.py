@@ -213,6 +213,9 @@ class TradingOrchestrator:
         await self.bot.initialize()
         self.bot.set_execute_callback(self.on_execute)
 
+        # Set database reference on claude_client for signal context
+        claude_client.set_database(self.db)
+
         logger.info("All components initialized successfully")
         return True
 

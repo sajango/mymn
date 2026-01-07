@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.risk_guard import RiskCheckResult
+from src.signal_filter import SignalConsistencyFilter
 
 # Ensure env vars set before imports
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test_token")
@@ -97,15 +98,26 @@ class TestSignalToExecutionFlow:
         mock.validate = AsyncMock(return_value=RiskCheckResult(passed=True))
         return mock
 
+    @pytest.fixture
+    def permissive_signal_filter(self, temp_db):
+        """Create signal filter that allows all signals (no cooldown)."""
+        return SignalConsistencyFilter(
+            db=temp_db,
+            direction_change_cooldown_minutes=0,
+            direction_change_min_confidence=0,
+            rapid_flip_threshold_minutes=0,
+        )
+
     @pytest.mark.asyncio
     async def test_full_signal_execution_flow(
-        self, temp_db, mock_mt5, mock_settings, buy_signal, mock_risk_guard
+        self, temp_db, mock_mt5, mock_settings, buy_signal, mock_risk_guard, permissive_signal_filter
     ):
         """Test complete flow: signal → execution → db save."""
         from src.trade_executor import TradeExecutor
 
         executor = TradeExecutor(
-            mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard
+            mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard,
+            signal_filter=permissive_signal_filter
         )
 
         # Execute signal
@@ -129,7 +141,7 @@ class TestSignalToExecutionFlow:
 
     @pytest.mark.asyncio
     async def test_trailing_stop_activation_flow(
-        self, temp_db, mock_mt5, mock_settings, buy_signal, mock_risk_guard
+        self, temp_db, mock_mt5, mock_settings, buy_signal, mock_risk_guard, permissive_signal_filter
     ):
         """Test trailing stop activates when TP1 hit."""
         from src.trade_executor import TradeExecutor
@@ -137,7 +149,8 @@ class TestSignalToExecutionFlow:
 
         # Execute trade first
         executor = TradeExecutor(
-            mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard
+            mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard,
+            signal_filter=permissive_signal_filter
         )
         await executor.execute_signal(buy_signal)
 
@@ -415,6 +428,14 @@ class TestErrorHandling:
         mock_risk_guard = MagicMock()
         mock_risk_guard.validate = AsyncMock(return_value=RiskCheckResult(passed=True))
 
+        # Create permissive signal filter to bypass cooldown
+        permissive_filter = SignalConsistencyFilter(
+            db=db,
+            direction_change_cooldown_minutes=0,
+            direction_change_min_confidence=0,
+            rapid_flip_threshold_minutes=0,
+        )
+
         signal = TradingSignal(
             timestamp=datetime.now(timezone.utc).isoformat(),
             symbol="XAUUSD",
@@ -430,7 +451,8 @@ class TestErrorHandling:
         )
 
         executor = TradeExecutor(
-            mt5=mock_mt5, db=db, settings=settings, risk_guard=mock_risk_guard
+            mt5=mock_mt5, db=db, settings=settings, risk_guard=mock_risk_guard,
+            signal_filter=permissive_filter
         )
         result = await executor.execute_signal(signal)
 

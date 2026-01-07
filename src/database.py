@@ -585,6 +585,72 @@ class Database:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def get_signal_context(self, limit: int = 3) -> Optional[dict]:
+        """Get context from recent signals for Claude prompt.
+
+        Args:
+            limit: Number of recent signals to analyze
+
+        Returns:
+            dict with signal context or None if no signals exist
+        """
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        action,
+                        confidence,
+                        wave_position,
+                        created_at
+                    FROM signals
+                    WHERE action IN ('BUY', 'SELL')
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+
+                if not rows:
+                    return None
+
+                # Most recent signal
+                last = rows[0]
+                last_time_str = last["created_at"]
+
+                # Parse timestamp (handle both with and without timezone)
+                try:
+                    if "+" in last_time_str or last_time_str.endswith("Z"):
+                        last_time = datetime.fromisoformat(
+                            last_time_str.replace("Z", "+00:00")
+                        )
+                    else:
+                        last_time = datetime.fromisoformat(last_time_str).replace(
+                            tzinfo=timezone.utc
+                        )
+                except ValueError:
+                    last_time = datetime.now(timezone.utc)
+
+                minutes_since = int(
+                    (datetime.now(timezone.utc) - last_time).total_seconds() / 60
+                )
+
+                # Build sequence string (oldest to newest)
+                sequence = " → ".join(row["action"] for row in reversed(rows))
+
+                return {
+                    "last_action": last["action"],
+                    "last_time": last_time_str,
+                    "last_confidence": last["confidence"] or 0,
+                    "wave_position": last["wave_position"],
+                    "recent_sequence": sequence,
+                    "minutes_since_last": minutes_since,
+                }
+
+        except sqlite3.Error as e:
+            logger.error(f"Error getting signal context: {e}")
+            return None
+
     def get_trade_summary(self) -> dict:
         """Get trading summary statistics.
 

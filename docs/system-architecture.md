@@ -1,8 +1,8 @@
 # System Architecture - MT5 Elliott Wave Trading System
 
 **Last Updated**: 2026-01-07
-**Architecture Version**: 1.3
-**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation) + Phase 1 (Signal Consistency Filter)
+**Architecture Version**: 1.4
+**Current Phase**: Phase 3 (Signal Context Memory) + Phase 9 (RiskGuard Key Level Proximity Validation)
 
 ## Table of Contents
 
@@ -127,12 +127,43 @@ RiskGuard validates all signals before execution
 
 ### Message Flow Sequence
 
+#### Elliott Wave Analysis with Signal Context (Phase 3)
+
+```
+Scheduler triggers M15 analysis
+        ↓
+claude_client.py requests signal context
+        ├─→ database.get_signal_context(limit=3)
+        │   ├─→ Fetch last 3 tradeable signals
+        │   ├─→ Extract: action, confidence, wave_position, timestamp
+        │   └─→ Build: recent_sequence, minutes_since_last
+        │
+claude_client.py builds prompt with context
+        ├─→ Include previous signal: BUY at confidence 85%
+        ├─→ Include sequence: BUY → SELL → BUY
+        ├─→ Include wave position from last analysis
+        └─→ Add direction change requirements
+        │   ├─→ Must explain wave count change
+        │   ├─→ Must identify trigger for reassessment
+        │   └─→ Confidence >= 75% for direction changes
+        ↓
+Claude CLI analyzes with historical context
+        ├─→ Validates consistency with previous wave position
+        ├─→ Justifies any direction changes
+        └─→ Produces signal with awareness of recent decisions
+        ↓
+signal_parser.py extracts trading signal
+        ↓
+signal_filter.py applies consistency check
+        └─→ Uses context to enforce cooldown/confidence thresholds
+        ↓
+Execution continues as normal
+```
+
 #### Trade Signal Execution Sequence
 
 ```
-User sends /signal command
-        ↓
-telegram_bot.py receives message
+User sends /signal command or M15 analysis triggers
         ↓
 signal_parser.py extracts and validates signal
         ↓
@@ -157,22 +188,30 @@ Scheduler checks trailing stop every interval
 
 ## Data Flow Diagrams
 
-### 1. Order Placement Flow
+### 1. Order Placement Flow with Signal Context Awareness (Phase 3+)
 
 ```
-Signal Input (Telegram)
+Signal Input (Telegram or M15 analysis)
+    │
+    ├─→ Database retrieves signal context (Phase 3)
+    │       │ ✓ Last 3 tradeable signals
+    │       │ ✓ Recent action sequence: BUY → SELL → BUY
+    │       │ ✓ Wave position from last analysis
+    │       │ ✓ Time since last signal (minutes)
+    │       └─→ Context dict passed to Claude
     │
     ├─→ Signal Parser (extract JSON, validate Pydantic)
     │       │ ✓ Action (BUY/SELL)
     │       │ ✓ Entry, SL, TP levels
     │       │ ✓ Confidence (0-100)
+    │       │ ✓ Wave position from analysis
     │       └─→ TradingSignal object
     │
     ├─→ Signal Consistency Filter (Phase 1)
-    │       │ ✓ Check direction consistency
-    │       │ ✓ Enforce cooldown on reversals
-    │       │ ✓ Require high confidence for flips
-    │       │ ✓ Detect rapid flip-flop patterns
+    │       │ ✓ Check direction consistency vs context
+    │       │ ✓ Enforce cooldown on reversals (60 min default)
+    │       │ ✓ Require confidence >= 75% for direction changes
+    │       │ ✓ Detect rapid flip-flop patterns (A→B→A within 30 min)
     │       └─→ FilterResult (pass/fail with reason)
     │
     ├─→ Risk Guard (Phase 9)
@@ -196,8 +235,9 @@ Signal Input (Telegram)
     │       │ ✓ Retry on requote (3 attempts)
     │       └─→ Order ticket (or -1 in paper mode)
     │
-    ├─→ Database
+    ├─→ Database saves signal with context
     │       │ ✓ Save signal (status: pending)
+    │       │ ✓ Save wave_position for next analysis
     │       │ ✓ Save trade with ticket
     │       │ ✓ Save TP levels
     │       │ ✓ Set trailing_state: inactive
@@ -466,7 +506,47 @@ trades = executor.db.get_open_trades()
 
 ---
 
-### 7. Hysteresis Pattern (Signal Consistency Filter)
+### 7. Stateful Context Pattern (Signal Context Memory - Phase 3)
+
+```python
+# database.py - Maintain signal history for Claude awareness
+class Database:
+    def get_signal_context(self, limit: int = 3) -> Optional[dict]:
+        # Fetch last N tradeable signals
+        # Build context dict:
+        # - last_action: Last signal direction (BUY/SELL)
+        # - last_confidence: Confidence of last signal
+        # - wave_position: Elliott Wave position from analysis
+        # - recent_sequence: Direction sequence (BUY → SELL → BUY)
+        # - minutes_since_last: Time elapsed since last signal
+        # Pass to Claude prompt for awareness
+```
+
+**Logic Flow**:
+1. Claude requests signal context before analysis
+2. Database fetches last 3 tradeable signals with: action, confidence, wave_position, timestamp
+3. Build recent_sequence string showing direction history
+4. Calculate minutes_since_last for temporal awareness
+5. Pass context to Claude in prompt with direction change requirements
+
+**Prompt Integration**:
+- Include "Last Signal: BUY at 85% confidence 30 minutes ago"
+- Show "Recent Sequence: BUY → SELL → BUY"
+- Show "Last Wave Position: Elliott Wave 3 in progress"
+- Require justification for direction changes
+- Require confidence >= 75% for reversals
+- Require explanations if contradicting previous wave count
+
+**Benefits**:
+- Claude maintains awareness of recent decisions
+- Prevents stateless analysis producing contradictory interpretations
+- Forces justification for direction changes
+- Reduces whipsaw trades from analysis inconsistency
+- Creates audit trail of reasoning across analyses
+
+---
+
+### 8. Hysteresis Pattern (Signal Consistency Filter)
 
 ```python
 # signal_filter.py - Prevent rapid direction reversals
@@ -494,6 +574,7 @@ class SignalConsistencyFilter:
 - Hysteresis prevents decision oscillation
 - Configuration-driven thresholds
 - Clear rejection reasons for logging
+- Works in tandem with signal context memory (Phase 3) for consistency enforcement
 
 ---
 
@@ -991,21 +1072,37 @@ tests/
 ├─ test_config.py              (Configuration)
 ├─ test_mt5.py                 (MT5 Client)
 ├─ test_signal_parser.py       (Signal Processing)
-├─ test_signal_filter.py       (Consistency Filter - NEW Phase 1)
-├─ test_claude_client.py       (AI Integration)
-├─ test_database.py            (Persistence - 16 tests)
+├─ test_signal_filter.py       (Consistency Filter - Phase 1)
+├─ test_claude_client.py       (AI Integration + Phase 3 context tests)
+├─ test_database.py            (Persistence + Phase 3 context retrieval - 20 tests)
 ├─ test_trade_executor.py      (Execution - 13 tests)
 ├─ test_trailing_stop.py       (State Machine - 16 tests)
+├─ test_integration.py         (Component integration - updated Phase 3)
 └─ test_telegram.py            (UI)
 
 Coverage:
-├─ signal_filter.py   92%
-├─ database.py        96%
-├─ trade_executor.py  87%
-└─ trailing_stop.py   84%
+├─ signal_filter.py            92%
+├─ database.py                 96%
+├─ trade_executor.py           87%
+├─ trailing_stop.py            84%
+├─ claude_client.py (Phase 3)  89% (new context retrieval tests)
+└─ integration.py (Phase 3)    85% (signal context flow)
 
-Total: 50/50 passing (100%)
+Total: 60+ tests passing (100%)
 ```
+
+**Phase 3 Test Coverage**:
+- `test_claude_client.py`: 3 new context tests
+  - Context retrieval with multiple signals
+  - Wave position preservation
+  - Temporal context (minutes since last)
+- `test_database.py`: 4 new context retrieval tests
+  - Signal context retrieval
+  - Sequence building logic
+  - Edge cases (no signals, single signal)
+- `test_integration.py`: Updated for signal context flow
+  - Full flow with context passing
+  - Signal → Database → Claude → Parser → Filter
 
 ### Test Strategy
 

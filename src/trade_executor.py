@@ -41,11 +41,13 @@ class TradeExecutor:
         db: Optional[Database] = None,
         settings=None,
         risk_guard: Optional[RiskGuard] = None,
+        signal_filter: Optional[SignalConsistencyFilter] = None,
     ):
         self._mt5 = mt5
         self._db = db
         self._settings = settings
         self._risk_guard = risk_guard
+        self._signal_filter = signal_filter
 
     @property
     def mt5(self) -> MT5Client:
@@ -78,7 +80,7 @@ class TradeExecutor:
     @property
     def signal_filter(self) -> SignalConsistencyFilter:
         """Lazy load signal filter."""
-        if not hasattr(self, "_signal_filter") or self._signal_filter is None:
+        if self._signal_filter is None:
             self._signal_filter = get_signal_filter()
         return self._signal_filter
 

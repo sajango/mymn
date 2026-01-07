@@ -115,6 +115,15 @@ class ClaudeClient:
         self._instructions_path = instructions_path
         self._timeout = timeout
         self.max_retries = max_retries
+        self._db = None
+
+    def set_database(self, db) -> None:
+        """Set database reference for signal context retrieval.
+
+        Args:
+            db: Database instance
+        """
+        self._db = db
 
     def _validate_path(self, path: Path) -> Path:
         """Validate and sanitize file path for security.
@@ -195,11 +204,14 @@ class ClaudeClient:
             logger.error(f"Claude CLI check error: {e}")
             return False
 
-    def _build_prompt(self, csv_files: dict[str, Path]) -> str:
-        """Build analysis prompt with CSV data references.
+    def _build_prompt(
+        self, csv_files: dict[str, Path], signal_context: Optional[dict] = None
+    ) -> str:
+        """Build analysis prompt with CSV data references and optional signal context.
 
         Args:
             csv_files: Dict mapping timeframe to CSV file path
+            signal_context: Optional context from recent signals
 
         Returns:
             Prompt string for analysis
@@ -222,8 +234,43 @@ class ClaudeClient:
             "",
             "---",
             "",
-            "STEP 1: Read these CSV files using the Read tool:",
         ]
+
+        # Add signal context if available
+        if signal_context:
+            prompt_parts.extend([
+                "## PREVIOUS ANALYSIS CONTEXT",
+                "",
+                f"**Last Signal:** {signal_context['last_action']} "
+                f"(confidence: {signal_context['last_confidence']}%) "
+                f"at {signal_context['last_time']}",
+                f"**Time Since Last:** {signal_context['minutes_since_last']} minutes",
+                f"**Recent Sequence:** {signal_context['recent_sequence']}",
+            ])
+
+            if signal_context.get("wave_position"):
+                prompt_parts.append(
+                    f"**Last Wave Position:** {signal_context['wave_position']}"
+                )
+
+            prompt_parts.extend([
+                "",
+                "## DIRECTION CHANGE REQUIREMENTS",
+                "",
+                "If your analysis suggests a DIFFERENT direction from the last signal:",
+                "",
+                "1. **Explain Wave Count Change:** What price action invalidated previous count?",
+                "2. **Identify Trigger:** What new development triggered this reassessment?",
+                "3. **Confidence Threshold:** Direction changes require confidence >= 75%",
+                "4. **Time Consideration:** Signals within 60 min of opposite need strong justification",
+                "",
+                "If market conditions similar to last analysis, maintain consistency unless clear evidence of change.",
+                "",
+                "---",
+                "",
+            ])
+
+        prompt_parts.append("STEP 1: Read these CSV files using the Read tool:")
 
         for tf, path in sorted(csv_files.items()):
             # Provide full path for Read tool access
@@ -366,18 +413,22 @@ class ClaudeClient:
             raise ClaudeTimeoutError(f"CLI timed out after {self.timeout}s")
 
     def _retry_with_backoff(
-        self, csv_files: dict[str, Path], attempt: int = 0
+        self,
+        csv_files: dict[str, Path],
+        signal_context: Optional[dict] = None,
+        attempt: int = 0,
     ) -> Optional[str]:
         """Execute CLI with exponential backoff retry.
 
         Args:
             csv_files: CSV files for analysis
+            signal_context: Optional context from recent signals
             attempt: Current attempt number
 
         Returns:
             CLI output or None if all retries fail
         """
-        prompt = self._build_prompt(csv_files)
+        prompt = self._build_prompt(csv_files, signal_context=signal_context)
         settings_file = None
 
         try:
@@ -397,7 +448,7 @@ class ClaudeClient:
                 delay = 2 ** attempt * 5  # 5s, 10s, 20s...
                 logger.warning(f"Retry {attempt + 1}/{self.max_retries} after {delay}s: {e}")
                 time.sleep(delay)
-                return self._retry_with_backoff(csv_files, attempt + 1)
+                return self._retry_with_backoff(csv_files, signal_context, attempt + 1)
             logger.error(f"All retries exhausted: {e}")
             return None
 
@@ -465,8 +516,24 @@ class ClaudeClient:
 
         logger.info(f"[ANALYSIS] Instructions: {self.instructions_path}")
 
+        # Get signal context from database if available
+        signal_context = None
+        if self._db:
+            try:
+                signal_context = self._db.get_signal_context(limit=3)
+                if signal_context:
+                    logger.info(
+                        f"[ANALYSIS] Signal context: last={signal_context['last_action']}, "
+                        f"seq={signal_context['recent_sequence']}, "
+                        f"mins_ago={signal_context['minutes_since_last']}"
+                    )
+                else:
+                    logger.debug("[ANALYSIS] No previous signals for context")
+            except Exception as ctx_err:
+                logger.warning(f"[ANALYSIS] Failed to get signal context: {ctx_err}")
+
         # Run analysis with retry
-        response = self._retry_with_backoff(csv_files)
+        response = self._retry_with_backoff(csv_files, signal_context=signal_context)
         if response is None:
             logger.error("[ANALYSIS] Claude CLI failed after all retries")
             return create_no_trade_signal(

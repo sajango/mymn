@@ -372,5 +372,52 @@ class TestSingletonInstance:
         assert isinstance(claude_client, ClaudeClient)
 
 
+class TestSignalContext:
+    """Test signal context integration."""
+
+    def test_build_prompt_with_signal_context(self, tmp_path: Path) -> None:
+        """Test that signal context is included in prompt."""
+        client = ClaudeClient()
+
+        signal_context = {
+            "last_action": "BUY",
+            "last_time": "2026-01-07T10:00:00Z",
+            "last_confidence": 75,
+            "wave_position": "Wave 3 impulse",
+            "recent_sequence": "SELL → BUY → BUY",
+            "minutes_since_last": 45,
+        }
+
+        csv_files = {"H4": tmp_path / "test.csv"}
+        prompt = client._build_prompt(csv_files, signal_context=signal_context)
+
+        assert "PREVIOUS ANALYSIS CONTEXT" in prompt
+        assert "**Last Signal:** BUY" in prompt
+        assert "DIRECTION CHANGE REQUIREMENTS" in prompt
+        assert "confidence >= 75%" in prompt
+        assert "Wave 3 impulse" in prompt
+        assert "SELL → BUY → BUY" in prompt
+
+    def test_build_prompt_without_signal_context(self, tmp_path: Path) -> None:
+        """Test that prompt works without signal context."""
+        client = ClaudeClient()
+
+        csv_files = {"H4": tmp_path / "test.csv"}
+        prompt = client._build_prompt(csv_files, signal_context=None)
+
+        assert "PREVIOUS ANALYSIS CONTEXT" not in prompt
+        assert "DIRECTION CHANGE REQUIREMENTS" not in prompt
+        assert "JSON" in prompt  # Basic prompt content still present
+
+    def test_set_database(self) -> None:
+        """Test database setter."""
+        client = ClaudeClient()
+        assert client._db is None
+
+        mock_db = MagicMock()
+        client.set_database(mock_db)
+        assert client._db is mock_db
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -20,7 +20,8 @@
       "Bash(dir:*)",
       "Bash(pytest:*)",
       "Bash(ruff check:*)",
-      "mcp__sequential-thinking__sequentialthinking"
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(git -C \"D:\\\\ws\\\\mymn\" commit -m \"$\\(cat <<''EOF''\nfeat\\(signal-parser\\): add wave_position extraction from elliott_wave_analysis\n\nPhase 2 of Signal Consistency Fix plan:\n- Extract wave_position from signal.elliott_wave_analysis nested structures\n- Fallback to current_wave if wave_position missing\n- Extract h4_trend from h4_structure field\n- 43/43 tests passing, 0 critical issues\nEOF\n\\)\")"
     ]
   }
 }
