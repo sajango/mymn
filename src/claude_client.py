@@ -73,8 +73,26 @@ def _log_csv_file_info(tf: str, path: Path) -> dict:
 
     return info
 
-# Default paths
-DEFAULT_INSTRUCTIONS_PATH = Path(__file__).parent.parent / "instructions_v2.md"
+# Default paths - v4 primary, v2 fallback
+DEFAULT_INSTRUCTIONS_V4_PATH = Path(__file__).parent.parent / "instructions_v4.md"
+DEFAULT_INSTRUCTIONS_V2_PATH = Path(__file__).parent.parent / "instructions_v2.md"
+
+
+def _get_default_instructions_path() -> Path:
+    """Get default instructions path with v4 → v2 fallback.
+
+    Returns:
+        Path to instructions file (v4 if exists, else v2)
+
+    Raises:
+        FileNotFoundError: If neither v4 nor v2 instructions exist
+    """
+    if DEFAULT_INSTRUCTIONS_V4_PATH.exists():
+        return DEFAULT_INSTRUCTIONS_V4_PATH
+    if DEFAULT_INSTRUCTIONS_V2_PATH.exists():
+        logger.warning("instructions_v4.md not found, using v2 fallback")
+        return DEFAULT_INSTRUCTIONS_V2_PATH
+    raise FileNotFoundError("No instructions file found (v4 or v2)")
 
 
 class ClaudeClientError(Exception):
@@ -161,10 +179,10 @@ class ClaudeClient:
 
     @property
     def instructions_path(self) -> Path:
-        """Get instructions file path."""
+        """Get instructions file path with v4 → v2 fallback."""
         if self._instructions_path:
             return self._instructions_path
-        return DEFAULT_INSTRUCTIONS_PATH
+        return _get_default_instructions_path()
 
     @property
     def timeout(self) -> int:
