@@ -1,0 +1,93 @@
+{
+  "timestamp": "2024-08-21T14:30:00Z",
+  "symbol": "XAUUSD",
+  "pre_trade_checks": {
+    "trading_allowed": true,
+    "regime_suitable": true,
+    "session_suitable": true,
+    "spread_ok": true,
+    "risk_budget_available": true,
+    "all_checks_passed": true
+  },
+  "signal": {
+    "action": "BUY",
+    "entry_price": 3340.00,
+    "stop_loss": 3310.00,
+    "take_profit": [
+      {
+        "level": "TP1",
+        "price": 3380.00,
+        "fib_basis": "61.8% of W1",
+        "confluence_count": 2,
+        "probability": 80,
+        "close_percent": 40,
+        "risk_reward": 1.73
+      },
+      {
+        "level": "TP2",
+        "price": 3418.00,
+        "close_percent": 35
+      },
+      {
+        "level": "TP3",
+        "price": 3450.00,
+        "close_percent": 25
+      }
+    ],
+    "confidence": 78,
+    "position_size": {
+      "recommended_lots": 0.02,
+      "risk_percent": 1.5,
+      "risk_amount_usd": 30.00,
+      "atr_based": true
+    }
+  },
+  "market_regime": {
+    "classification": "trending_strong",
+    "adx_14": 32.5,
+    "trend_direction": "bullish",
+    "trend_strength": "strong",
+    "ema_spread_percent": 1.2,
+    "volatility_regime": "normal",
+    "elliott_wave_reliability": "high",
+    "confidence_modifier": 15,
+    "recommended_action": "full_analysis"
+  },
+  "wave_structure": {
+    "h4": {
+      "degree": "Primary",
+      "current_wave": "(3)",
+      "wave_label": "(3) of Primary impulse",
+      "position_in_sequence": "impulse_wave_3_of_5",
+      "structure": "impulse"
+    },
+    "h1": {
+      "degree": "Intermediate",
+      "current_wave": "4",
+      "wave_label": "4 of (3)",
+      "position_in_sequence": "correction_within_impulse",
+      "structure": "flat_correction",
+      "parent_wave": "H4_(3)"
+    },
+    "alignment_status": "ALIGNED",
+    "alignment_confidence_modifier": 10
+  },
+  "wave_analysis": {
+    "h4_trend": "bullish",
+    "current_wave": "wave_4_complete",
+    "wave_count_valid": true
+  },
+  "session_context": {
+    "current_session": "london_ny_overlap",
+    "session_quality": "optimal",
+    "session_modifier": 10
+  },
+  "confidence_breakdown": {
+    "base_score": 50,
+    "timeframe_alignment": 10,
+    "fibonacci_confluence": 10,
+    "session_bonus": 10,
+    "penalties": -2,
+    "total": 78
+  }
+}

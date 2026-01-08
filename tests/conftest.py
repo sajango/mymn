@@ -9,6 +9,7 @@ Provides centralized fixtures for:
 """
 
 import gc
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -263,3 +264,17 @@ def valid_json_response():
         }
     }
     ```'''
+
+
+@pytest.fixture
+def v4_signal_json():
+    """Load v4 signal fixture from file."""
+    fixture_path = Path(__file__).parent / "fixtures" / "v4_signal_sample.json"
+    return json.loads(fixture_path.read_text())
+
+
+@pytest.fixture
+def v4_signal(v4_signal_json):
+    """Create TradingSignal from v4 fixture."""
+    from src.signal_parser import TradingSignal
+    return TradingSignal.model_validate(v4_signal_json)

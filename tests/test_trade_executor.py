@@ -1,7 +1,9 @@
 """Tests for trade executor module."""
 
 import gc
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,6 +18,13 @@ from src.signal_parser import (
     TradingSignal,
 )
 from src.trade_executor import TradeExecutor
+
+
+@pytest.fixture
+def v4_signal_json():
+    """Load v4 signal fixture from file."""
+    fixture_path = Path(__file__).parent / "fixtures" / "v4_signal_sample.json"
+    return json.loads(fixture_path.read_text())
 
 
 @pytest.fixture
@@ -405,3 +414,142 @@ class TestSlTpValidation:
         stats = temp_db.get_validation_rejection_stats(days=1)
         assert stats["total"] >= 1
         assert "invalid_sl_buy" in stats["by_type"]
+
+
+class TestV4Integration:
+    """Integration tests with v4 format signals."""
+
+    @pytest.fixture
+    def v4_executor(self, mock_mt5, temp_db, mock_settings, mock_risk_guard, mock_signal_filter):
+        """Create executor with v4 compatible setup."""
+        exec = TradeExecutor(
+            mt5=mock_mt5, db=temp_db, settings=mock_settings, risk_guard=mock_risk_guard
+        )
+        exec._signal_filter = mock_signal_filter
+        return exec
+
+    @pytest.fixture
+    def v4_buy_signal(self, v4_signal_json):
+        """Create v4 BUY signal from fixture."""
+        return TradingSignal.model_validate(v4_signal_json)
+
+    @pytest.mark.asyncio
+    async def test_execute_v4_signal_paper_mode(self, v4_executor, v4_buy_signal):
+        """Execute v4 signal in paper mode."""
+        result = await v4_executor.execute_signal(v4_buy_signal)
+        assert result["status"] == "executed"
+        assert result["paper_mode"] is True
+        assert result["order_type"] == "BUY"
+
+    @pytest.mark.asyncio
+    async def test_v4_signal_preserves_all_fields(self, v4_buy_signal):
+        """v4 signal preserves all new fields."""
+        assert v4_buy_signal.market_regime is not None
+        assert v4_buy_signal.market_regime.classification == "trending_strong"
+        assert v4_buy_signal.market_regime.adx_14 == 32.5
+
+        assert v4_buy_signal.wave_structure is not None
+        assert v4_buy_signal.wave_structure.h4.degree == "Primary"
+        assert v4_buy_signal.wave_structure.alignment_status == "ALIGNED"
+
+        assert v4_buy_signal.pre_trade_checks is not None
+        assert v4_buy_signal.pre_trade_checks.all_checks_passed is True
+
+    @pytest.mark.asyncio
+    async def test_v4_enhanced_take_profit(self, v4_executor, v4_buy_signal, mock_mt5):
+        """Execute v4 signal with enhanced TP structure."""
+        result = await v4_executor.execute_signal(v4_buy_signal)
+
+        assert result["status"] == "executed"
+        # TP1 should be used for initial order
+        call_kwargs = mock_mt5.place_market_order.call_args.kwargs
+        assert call_kwargs["take_profit"] == 3380.00
+
+        # Verify enhanced TP fields are preserved
+        tp1 = v4_buy_signal.signal.take_profit[0]
+        assert tp1.fib_basis == "61.8% of W1"
+        assert tp1.confluence_count == 2
+        assert tp1.probability == 80
+
+    @pytest.mark.asyncio
+    async def test_v4_signal_saves_to_db(self, v4_executor, v4_buy_signal, temp_db):
+        """v4 signal saves correctly to database."""
+        await v4_executor.execute_signal(v4_buy_signal)
+
+        signals = temp_db.get_recent_signals(1)
+        assert len(signals) == 1
+        assert signals[0]["action"] == "BUY"
+        assert signals[0]["confidence"] == 78
+
+        trades = temp_db.get_open_trades()
+        assert len(trades) == 1
+
+
+class TestDrawdownIntegration:
+    """Integration tests for DrawdownManager with TradeExecutor.
+
+    NOTE: DrawdownManager integration with TradeExecutor is planned for future.
+    These tests validate DrawdownManager standalone functionality while
+    documenting expected integration behavior.
+    """
+
+    def test_drawdown_manager_validates_trading(self, temp_db):
+        """DrawdownManager can validate trading conditions."""
+        from src.drawdown_manager import DrawdownManager, DrawdownStatus
+
+        manager = DrawdownManager(db=temp_db)
+        result = manager.validate(account_balance=10000.0)
+
+        assert result.trading_allowed is True
+        assert result.status == DrawdownStatus.NORMAL
+        assert result.position_size_modifier == 1.0
+
+    def test_drawdown_manager_blocks_on_daily_limit(self, temp_db):
+        """DrawdownManager blocks trading when daily limit exceeded."""
+        from src.drawdown_manager import DrawdownManager, DrawdownStatus
+
+        manager = DrawdownManager(db=temp_db)
+        # Initialize state with balance
+        manager.reset_daily(10000.0)
+
+        # Record losses exceeding 3% limit
+        manager.record_trade_result(pnl=-350.0, is_win=False, balance=9650.0)
+
+        result = manager.validate(account_balance=9650.0)
+
+        assert result.trading_allowed is False
+        assert result.status == DrawdownStatus.PAUSED
+        assert "DAILY_LIMIT" in result.pause_reason
+
+    def test_drawdown_recovery_mode_reduces_position(self, temp_db):
+        """DrawdownManager applies 0.5x modifier in recovery mode."""
+        from src.drawdown_manager import DrawdownManager, DrawdownStatus
+
+        manager = DrawdownManager(db=temp_db)
+        # Initialize with high peak balance
+        manager.reset_daily(10000.0)
+
+        # Simulate 5% drawdown from peak
+        result = manager.validate(account_balance=9500.0)
+
+        assert result.trading_allowed is True
+        assert result.position_size_modifier == 0.5
+        assert result.status == DrawdownStatus.RECOVERY
+
+    def test_drawdown_consecutive_losses_pause(self, temp_db):
+        """3 consecutive losses triggers trading pause."""
+        from src.drawdown_manager import DrawdownManager, DrawdownStatus
+
+        manager = DrawdownManager(db=temp_db)
+        manager.reset_daily(10000.0)
+
+        # Record 3 consecutive losses
+        manager.record_trade_result(pnl=-50.0, is_win=False, balance=9950.0)
+        manager.record_trade_result(pnl=-50.0, is_win=False, balance=9900.0)
+        manager.record_trade_result(pnl=-50.0, is_win=False, balance=9850.0)
+
+        result = manager.validate(account_balance=9850.0)
+
+        assert result.trading_allowed is False
+        assert result.status == DrawdownStatus.PAUSED
+        assert "CONSECUTIVE_LOSSES" in result.pause_reason
