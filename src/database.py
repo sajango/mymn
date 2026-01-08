@@ -195,6 +195,26 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_signal_hash_created ON signal_hashes(created_at)"
             )
 
+            # Validation rejections table - tracks Claude AI errors
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS validation_rejections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_id INTEGER,
+                    rejection_type TEXT NOT NULL,
+                    entry_price REAL,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    action TEXT,
+                    details TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (signal_id) REFERENCES signals (id)
+                )
+            """)
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rejection_type ON validation_rejections(rejection_type)"
+            )
+
             conn.commit()
             logger.info(f"Database initialized: {self.db_path}")
 
@@ -894,6 +914,85 @@ class Database:
             return {
                 "overall": dict(overall) if overall else {},
                 "by_session": {row["session"]: row["count"] for row in by_session},
+            }
+
+    def save_validation_rejection(
+        self,
+        signal_id: Optional[int],
+        rejection_type: str,
+        entry_price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        action: Optional[str] = None,
+        details: str = "",
+    ) -> int:
+        """Save validation rejection for tracking Claude AI errors.
+
+        Args:
+            signal_id: Associated signal ID if available
+            rejection_type: Type of rejection (invalid_sl_buy, invalid_tp_sell, etc.)
+            entry_price: Entry price from signal
+            stop_loss: Stop loss price from signal
+            take_profit: Take profit price from signal
+            action: Signal action (BUY/SELL)
+            details: Detailed rejection message
+
+        Returns:
+            Rejection record ID
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO validation_rejections (
+                    signal_id, rejection_type, entry_price, stop_loss,
+                    take_profit, action, details
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (signal_id, rejection_type, entry_price, stop_loss, take_profit, action, details),
+            )
+            rejection_id = cursor.lastrowid
+            conn.commit()
+            logger.warning(
+                f"Validation rejection saved: id={rejection_id}, type={rejection_type}"
+            )
+            return rejection_id
+
+    def get_validation_rejection_stats(self, days: int = 30) -> dict:
+        """Get statistics on validation rejections.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            Dict with rejection counts by type and overall stats
+        """
+        with self._get_connection() as conn:
+            # Count by rejection type
+            by_type = conn.execute(
+                """
+                SELECT rejection_type, COUNT(*) as count
+                FROM validation_rejections
+                WHERE created_at >= datetime('now', ? || ' days')
+                GROUP BY rejection_type
+                ORDER BY count DESC
+                """,
+                (f"-{days}",),
+            ).fetchall()
+
+            # Total count
+            total = conn.execute(
+                """
+                SELECT COUNT(*) as total
+                FROM validation_rejections
+                WHERE created_at >= datetime('now', ? || ' days')
+                """,
+                (f"-{days}",),
+            ).fetchone()
+
+            return {
+                "by_type": {row["rejection_type"]: row["count"] for row in by_type},
+                "total": total["total"] if total else 0,
+                "days": days,
             }
 
 

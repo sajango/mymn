@@ -84,6 +84,44 @@ class TradeExecutor:
             self._signal_filter = get_signal_filter()
         return self._signal_filter
 
+    def _validate_sl_tp_direction(
+        self,
+        action: SignalAction,
+        entry_price: float,
+        stop_loss: float,
+        tp1_price: float,
+    ) -> str | None:
+        """Validate SL/TP prices are directionally correct.
+
+        Prevents Claude hallucination errors where SL/TP are reversed.
+
+        Args:
+            action: BUY or SELL signal action
+            entry_price: Entry price
+            stop_loss: Stop loss price
+            tp1_price: First take profit price
+
+        Returns:
+            Error message if invalid, None if valid
+        """
+        is_buy = action in (SignalAction.BUY, SignalAction.BUY_LIMIT)
+        is_sell = action in (SignalAction.SELL, SignalAction.SELL_LIMIT)
+
+        if is_buy:
+            # BUY: SL must be below entry, TP must be above entry
+            if stop_loss >= entry_price:
+                return f"invalid_sl_buy: SL({stop_loss}) >= Entry({entry_price})"
+            if tp1_price <= entry_price:
+                return f"invalid_tp_buy: TP1({tp1_price}) <= Entry({entry_price})"
+        elif is_sell:
+            # SELL: SL must be above entry, TP must be below entry
+            if stop_loss <= entry_price:
+                return f"invalid_sl_sell: SL({stop_loss}) <= Entry({entry_price})"
+            if tp1_price >= entry_price:
+                return f"invalid_tp_sell: TP1({tp1_price}) >= Entry({entry_price})"
+
+        return None
+
     async def execute_signal(self, signal: TradingSignal) -> dict:
         """Execute trading signal.
 
@@ -204,6 +242,32 @@ class TradeExecutor:
 
         # Get TP1 for initial order (if available)
         tp1_price = s.take_profit[0].price if s.take_profit else s.entry_price
+
+        # Validate SL/TP direction consistency
+        validation_error = self._validate_sl_tp_direction(
+            action=s.action,
+            entry_price=s.entry_price,
+            stop_loss=s.stop_loss,
+            tp1_price=tp1_price,
+        )
+        if validation_error:
+            logger.error(f"SL/TP validation failed: {validation_error}")
+            self.db.update_signal_status(signal_id, SignalStatus.REJECTED)
+            # Log rejection for Claude AI error tracking
+            self.db.save_validation_rejection(
+                signal_id=signal_id,
+                rejection_type=validation_error.split(":")[0],  # e.g., "invalid_sl_buy"
+                entry_price=s.entry_price,
+                stop_loss=s.stop_loss,
+                take_profit=tp1_price,
+                action=s.action.value,
+                details=validation_error,
+            )
+            return {
+                "status": "rejected",
+                "signal_id": signal_id,
+                "reason": validation_error,
+            }
 
         # Calculate position size with confidence
         volume = self.mt5.calculate_position_size(

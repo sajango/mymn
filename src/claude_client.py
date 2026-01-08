@@ -590,8 +590,8 @@ class ClaudeClient:
             if signal.wave_analysis:
                 wave = signal.wave_analysis
                 logger.info(
-                    f"[SIGNAL] Wave: degree={wave.primary_wave.degree}, "
-                    f"position={wave.primary_wave.current_position}"
+                    f"[SIGNAL] Wave: trend={wave.h4_trend}, "
+                    f"position={wave.wave_position or wave.current_wave}"
                 )
         else:
             logger.info(f"[SIGNAL] No trade - Reason: {sig.reason}")
@@ -695,9 +695,9 @@ class ClaudeClient:
             if signal.wave_analysis:
                 wave = signal.wave_analysis
                 record["wave_analysis"] = {
-                    "degree": wave.primary_wave.degree,
-                    "position": wave.primary_wave.current_position,
-                    "direction": wave.primary_wave.direction,
+                    "h4_trend": wave.h4_trend,
+                    "current_wave": wave.current_wave,
+                    "wave_position": wave.wave_position,
                 }
 
             with open(filepath, "w", encoding="utf-8") as f:

@@ -600,21 +600,62 @@ def _normalize_signal_data(data: dict) -> dict:
                 wave_analysis["wave_position"] = str(wave_position)
                 logger.debug(f"Normalized: extracted wave_position: {wave_position}")
 
-            # Extract h4_trend if available
-            h4_structure = elliott_wave.get("h4_structure", "")
-            if h4_structure and "bullish" in str(h4_structure).lower():
-                wave_analysis["h4_trend"] = "bullish"
-            elif h4_structure and "bearish" in str(h4_structure).lower():
-                wave_analysis["h4_trend"] = "bearish"
+            # Extract h4_trend from multiple possible locations
+            h4_trend = None
+            # 1. Try timeframe_analysis.h4.trend (Claude's preferred location)
+            timeframe_analysis = signal.get("timeframe_analysis", {})
+            h4_data = timeframe_analysis.get("h4", {})
+            if isinstance(h4_data, dict) and h4_data.get("trend"):
+                h4_trend_raw = str(h4_data["trend"]).lower()
+                if "bullish" in h4_trend_raw:
+                    h4_trend = "bullish"
+                elif "bearish" in h4_trend_raw:
+                    h4_trend = "bearish"
+                else:
+                    h4_trend = h4_trend_raw  # Use as-is if not bullish/bearish
+            # 2. Try elliott_wave.h4_structure keyword match
+            if not h4_trend:
+                h4_structure = elliott_wave.get("h4_structure", "")
+                if h4_structure and "bullish" in str(h4_structure).lower():
+                    h4_trend = "bullish"
+                elif h4_structure and "bearish" in str(h4_structure).lower():
+                    h4_trend = "bearish"
+            # 3. Try technical_context.h4_trend
+            if not h4_trend:
+                tech_context = data.get("technical_context", {})
+                if isinstance(tech_context, dict):
+                    h4_trend = tech_context.get("h4_trend")
+            # 4. Default fallback
+            if h4_trend:
+                wave_analysis["h4_trend"] = h4_trend
+            else:
+                wave_analysis["h4_trend"] = "unknown"
+                logger.debug("Normalized: h4_trend not found, defaulting to 'unknown'")
 
-            # Extract current_wave description
-            current_wave = elliott_wave.get("current_wave", "")
+            # Extract current_wave from multiple locations
+            current_wave = (
+                elliott_wave.get("current_wave") or
+                elliott_wave.get("primary_count") or  # Claude often uses this
+                elliott_wave.get("wave_description") or
+                wave_position  # Fallback to wave_position if nothing else
+            )
             if current_wave:
                 wave_analysis["current_wave"] = str(current_wave)
 
             if wave_analysis:
                 data["wave_analysis"] = wave_analysis
                 logger.debug("Normalized: created wave_analysis from elliott_wave_analysis")
+
+        # Handle take_profit as single float -> convert to list
+        # Claude may return: "take_profit": 4430.0 instead of a list
+        if "take_profit" in signal and isinstance(signal["take_profit"], (int, float)):
+            tp_price = float(signal["take_profit"])
+            signal["take_profit"] = [{
+                "level": "TP1",
+                "price": tp_price,
+                "close_percent": 100  # Single TP = close 100%
+            }]
+            logger.debug(f"Normalized: take_profit float {tp_price} -> take_profit array")
 
         # Convert take_profit_1/2/3 to take_profit array
         if "take_profit" not in signal or not signal.get("take_profit"):
@@ -638,7 +679,18 @@ def _normalize_signal_data(data: dict) -> dict:
         # Normalize existing take_profit array items
         if "take_profit" in signal and isinstance(signal["take_profit"], list):
             normalized_tps = []
+            # Default close percentages for multi-TP
+            close_percents = [40, 35, 25]
             for i, tp in enumerate(signal["take_profit"]):
+                # Handle list of floats: [4430.0, 4400.0, 4380.0]
+                if isinstance(tp, (int, float)):
+                    normalized_tps.append({
+                        "level": f"TP{i + 1}",
+                        "price": float(tp),
+                        "close_percent": close_percents[i] if i < len(close_percents) else 100
+                    })
+                    logger.debug(f"Normalized: take_profit[{i}] float {tp} -> TP{i + 1}")
+                    continue
                 if isinstance(tp, dict):
                     normalized_tp = dict(tp)
 

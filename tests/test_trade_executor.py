@@ -289,3 +289,119 @@ class TestPositionsSummary:
         assert "XAUUSD" in summary
         assert "0.05" in summary
         assert "3350.00" in summary
+
+
+class TestSlTpValidation:
+    """Test SL/TP direction validation."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_buy_with_sl_above_entry(self, executor, temp_db):
+        """Should reject BUY when SL >= entry (inverted SL)."""
+        signal = TradingSignal(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=3350.00,
+                stop_loss=3360.00,  # WRONG: SL above entry for BUY
+                take_profit=[
+                    TakeProfit(level="TP1", price=3400.00, close_percent=100),
+                ],
+                confidence=75,
+            ),
+        )
+
+        result = await executor.execute_signal(signal)
+
+        assert result["status"] == "rejected"
+        assert "invalid_sl_buy" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_buy_with_tp_below_entry(self, executor, temp_db):
+        """Should reject BUY when TP <= entry (inverted TP)."""
+        signal = TradingSignal(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=3350.00,
+                stop_loss=3340.00,
+                take_profit=[
+                    TakeProfit(level="TP1", price=3300.00, close_percent=100),  # WRONG
+                ],
+                confidence=75,
+            ),
+        )
+
+        result = await executor.execute_signal(signal)
+
+        assert result["status"] == "rejected"
+        assert "invalid_tp_buy" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_sell_with_sl_below_entry(self, executor, temp_db):
+        """Should reject SELL when SL <= entry (inverted SL)."""
+        signal = TradingSignal(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.SELL,
+                entry_price=3350.00,
+                stop_loss=3340.00,  # WRONG: SL below entry for SELL
+                take_profit=[
+                    TakeProfit(level="TP1", price=3300.00, close_percent=100),
+                ],
+                confidence=75,
+            ),
+        )
+
+        result = await executor.execute_signal(signal)
+
+        assert result["status"] == "rejected"
+        assert "invalid_sl_sell" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_sell_with_tp_above_entry(self, executor, temp_db):
+        """Should reject SELL when TP >= entry (inverted TP)."""
+        signal = TradingSignal(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.SELL,
+                entry_price=3350.00,
+                stop_loss=3360.00,
+                take_profit=[
+                    TakeProfit(level="TP1", price=3400.00, close_percent=100),  # WRONG
+                ],
+                confidence=75,
+            ),
+        )
+
+        result = await executor.execute_signal(signal)
+
+        assert result["status"] == "rejected"
+        assert "invalid_tp_sell" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_logs_rejection_to_database(self, executor, temp_db):
+        """Should save validation rejection to database."""
+        signal = TradingSignal(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            symbol="XAUUSD",
+            signal=Signal(
+                action=SignalAction.BUY,
+                entry_price=3350.00,
+                stop_loss=3360.00,  # WRONG
+                take_profit=[
+                    TakeProfit(level="TP1", price=3400.00, close_percent=100),
+                ],
+                confidence=75,
+            ),
+        )
+
+        await executor.execute_signal(signal)
+
+        # Check rejection was logged
+        stats = temp_db.get_validation_rejection_stats(days=1)
+        assert stats["total"] >= 1
+        assert "invalid_sl_buy" in stats["by_type"]
