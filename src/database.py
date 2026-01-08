@@ -215,6 +215,31 @@ class Database:
                 "CREATE INDEX IF NOT EXISTS idx_rejection_type ON validation_rejections(rejection_type)"
             )
 
+            # Drawdown state table for real-time risk tracking
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS drawdown_state (
+                    id INTEGER PRIMARY KEY,
+                    date TEXT NOT NULL,
+                    daily_start_balance REAL NOT NULL,
+                    daily_pnl REAL DEFAULT 0,
+                    daily_trades INTEGER DEFAULT 0,
+                    weekly_start_balance REAL NOT NULL,
+                    weekly_pnl REAL DEFAULT 0,
+                    weekly_trades INTEGER DEFAULT 0,
+                    peak_balance REAL NOT NULL,
+                    consecutive_losses INTEGER DEFAULT 0,
+                    recovery_mode INTEGER DEFAULT 0,
+                    trading_paused INTEGER DEFAULT 0,
+                    pause_reason TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(date)
+                )
+            """)
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_drawdown_date ON drawdown_state(date)"
+            )
+
             conn.commit()
             logger.info(f"Database initialized: {self.db_path}")
 
@@ -994,6 +1019,77 @@ class Database:
                 "total": total["total"] if total else 0,
                 "days": days,
             }
+
+    # Drawdown state methods
+
+    def get_drawdown_state(self, date_str: str) -> Optional[dict]:
+        """Get drawdown state for a specific date.
+
+        Args:
+            date_str: Date string in YYYY-MM-DD format
+
+        Returns:
+            Drawdown state dict or None if not exists
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM drawdown_state WHERE date = ?",
+                (date_str,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def save_drawdown_state(self, state: dict) -> int:
+        """Save or update drawdown state.
+
+        Args:
+            state: Drawdown state dict with all fields
+
+        Returns:
+            Row ID
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR REPLACE INTO drawdown_state (
+                    id, date, daily_start_balance, daily_pnl, daily_trades,
+                    weekly_start_balance, weekly_pnl, weekly_trades,
+                    peak_balance, consecutive_losses, recovery_mode,
+                    trading_paused, pause_reason, updated_at
+                ) VALUES (
+                    (SELECT id FROM drawdown_state WHERE date = ?),
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+                )
+                """,
+                (
+                    state["date"],
+                    state["date"],
+                    state["daily_start_balance"],
+                    state.get("daily_pnl", 0),
+                    state.get("daily_trades", 0),
+                    state["weekly_start_balance"],
+                    state.get("weekly_pnl", 0),
+                    state.get("weekly_trades", 0),
+                    state["peak_balance"],
+                    state.get("consecutive_losses", 0),
+                    state.get("recovery_mode", 0),
+                    state.get("trading_paused", 0),
+                    state.get("pause_reason"),
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+
+    def get_latest_drawdown_state(self) -> Optional[dict]:
+        """Get most recent drawdown state.
+
+        Returns:
+            Latest drawdown state dict or None
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM drawdown_state ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+            return dict(row) if row else None
 
 
 # Lazy singleton

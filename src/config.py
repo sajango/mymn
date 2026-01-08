@@ -172,6 +172,32 @@ class Settings(BaseSettings):
         description="Minutes threshold for rapid flip-flop detection"
     )
 
+    # Drawdown Manager Settings (instruction_v4 Section 8.7)
+    daily_max_loss_percent: float = Field(
+        default=3.0, ge=0.5, le=10.0,
+        description="Maximum daily loss percentage before trading pause"
+    )
+    daily_max_trades: int = Field(
+        default=5, ge=1, le=20,
+        description="Maximum trades allowed per day"
+    )
+    consecutive_loss_limit: int = Field(
+        default=3, ge=1, le=10,
+        description="Consecutive losses before 4-hour pause"
+    )
+    weekly_max_loss_percent: float = Field(
+        default=6.0, ge=1.0, le=20.0,
+        description="Maximum weekly loss percentage"
+    )
+    monthly_max_drawdown_percent: float = Field(
+        default=10.0, ge=2.0, le=30.0,
+        description="Maximum monthly drawdown from peak"
+    )
+    recovery_mode_threshold: float = Field(
+        default=5.0, ge=1.0, le=15.0,
+        description="Drawdown % to trigger recovery mode (0.5x position)"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""

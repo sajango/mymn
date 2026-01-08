@@ -200,11 +200,14 @@ class TradeExecutor:
         signal_id = self.db.save_signal(signal)
 
         try:
-            result = await self._execute_order(signal, signal_id)
+            result = await self._execute_order(
+                signal, signal_id, risk_result.position_size_modifier
+            )
 
             # Add risk guard info to result
             if risk_result.action_taken:
                 result["risk_guard_action"] = risk_result.action_taken
+            result["position_modifier"] = risk_result.position_size_modifier
 
             return result
         except Exception as e:
@@ -217,13 +220,14 @@ class TradeExecutor:
             }
 
     async def _execute_order(
-        self, signal: TradingSignal, signal_id: int
+        self, signal: TradingSignal, signal_id: int, position_modifier: float = 1.0
     ) -> dict:
         """Execute order through MT5.
 
         Args:
             signal: Trading signal
             signal_id: Database signal ID
+            position_modifier: Position size multiplier from drawdown manager
 
         Returns:
             Execution result dict
@@ -276,6 +280,16 @@ class TradeExecutor:
             stop_loss=s.stop_loss,
             confidence=s.confidence,
         )
+
+        # Apply drawdown manager position modifier
+        if position_modifier < 1.0:
+            original_volume = volume
+            volume = round(volume * position_modifier, 2)
+            volume = max(volume, 0.01)  # Minimum lot size
+            logger.info(
+                f"Position reduced by drawdown manager: "
+                f"{original_volume} -> {volume} (modifier={position_modifier})"
+            )
 
         # Determine order type
         order_type = "BUY" if signal.is_buy else "SELL"
@@ -364,6 +378,22 @@ class TradeExecutor:
             )
 
         return "\n".join(lines)
+
+    def record_trade_closed(self, pnl: float, balance: float):
+        """Record trade closure for drawdown tracking.
+
+        Should be called when a trade is closed (via SL, TP, or manual).
+
+        Args:
+            pnl: Profit/loss amount in account currency
+            balance: Current account balance after trade
+        """
+        from src.drawdown_manager import get_drawdown_manager
+
+        is_win = pnl > 0
+        dd_manager = get_drawdown_manager()
+        dd_manager.record_trade_result(pnl, is_win, balance)
+        logger.info(f"Trade result recorded: pnl={pnl:.2f}, is_win={is_win}")
 
 
 # Lazy singleton

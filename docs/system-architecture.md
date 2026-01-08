@@ -1,8 +1,8 @@
 # System Architecture - MT5 Elliott Wave Trading System
 
-**Last Updated**: 2026-01-07
-**Architecture Version**: 1.4
-**Current Phase**: Phase 3 (Signal Context Memory) + Phase 9 (RiskGuard Key Level Proximity Validation)
+**Last Updated**: 2026-01-08
+**Architecture Version**: 1.5
+**Current Phase**: Phase 3 (Drawdown Manager) + Phase 9 (RiskGuard Key Level Proximity Validation)
 
 ## Table of Contents
 
@@ -50,13 +50,14 @@
         └─────────────────────────┬──────────────────────┘
                                   │
         ┌─────────────────────────▼──────────────────────┐
-        │   RISK VALIDATION LAYER (NEW - Phase 9)        │
-        │   (risk_guard.py, signal_filter.py)            │
+        │   RISK VALIDATION LAYER                        │
+        │   (risk_guard.py, signal_filter.py,            │
+        │    drawdown_manager.py)                        │
         │   ✓ Signal consistency (no rapid flip-flops)   │
         │   ✓ Duplicate detection                        │
         │   ✓ Direction conflict handling                │
         │   ✓ Key level proximity validation             │
-        │   ✓ Exposure limits checking                   │
+        │   ✓ Drawdown limits enforcement (Phase 3)      │
         │   ✓ Account risk management                    │
         └─────────────────────────┬──────────────────────┘
                                   │
@@ -106,7 +107,12 @@ signal_filter.py ◄──── Signal consistency check (Phase 1)
     ├─→ database.py
     └─→ config.py
     ↓
-risk_guard.py ◄────── Pre-execution validation (NEW - Phase 9)
+drawdown_manager.py ◄── Real-time drawdown tracking (Phase 3)
+    ├─→ database.py
+    └─→ config.py
+    ↓
+risk_guard.py ◄────── Pre-execution validation (Phase 9)
+    ├─→ drawdown_manager.py
     ├─→ mt5_client.py
     ├─→ database.py
     └─→ config.py
@@ -546,7 +552,69 @@ class Database:
 
 ---
 
-### 8. Hysteresis Pattern (Signal Consistency Filter)
+### 8. Real-Time Drawdown Management Pattern (Phase 3)
+
+```python
+# drawdown_manager.py - Multi-layer risk enforcement
+class DrawdownManager:
+    """Real-time drawdown tracking and enforcement.
+
+    Limits (instruction_v4 Section 8.7):
+    - Daily: 3% max loss, 5 trades, 3 consecutive losses
+    - Weekly: 6% max loss
+    - Monthly: 10% max drawdown from peak
+    - Recovery mode: 5% drawdown → 0.5x position
+    """
+
+    def validate(self, account_balance: float) -> DrawdownCheckResult:
+        # Check limits in priority order
+        checks = [
+            self._check_consecutive_losses,    # High priority
+            self._check_daily_limit,
+            self._check_daily_trades,
+            self._check_weekly_limit,
+            self._check_monthly_drawdown,      # Low priority
+        ]
+        # Return: trading_allowed, status, position_size_modifier
+```
+
+**Logic Flow**:
+1. Trading request received with current account balance
+2. DrawdownManager retrieves or creates daily state from database
+3. Validates against 5 independent limit checks (priority ordered)
+4. If any limit breached → pause trading, return modifier=0
+5. If all checks pass → calculate position modifier based on risk state
+6. Position modifiers:
+   - Normal: 1.0x (full position)
+   - Alert: 0.75x (1 consecutive loss)
+   - Recovery: 0.5x (2+ consecutive losses OR 5% drawdown)
+7. After each trade → record_trade_result() updates counters
+8. Daily reset clears daily counters, preserves peak balance
+9. Weekly reset clears weekly counters on Monday
+
+**Limit Enforcement**:
+- **Daily Loss (3%)**: If daily P&L ≤ -3% of day-start balance → pause
+- **Daily Trades (5)**: If trades executed ≥ 5 today → pause
+- **Consecutive Losses (3)**: If 3 losing trades in a row → pause for recovery
+- **Weekly Loss (6%)**: If weekly P&L ≤ -6% of week-start balance → pause
+- **Monthly Drawdown (10%)**: If balance ≤ (peak × 0.9) → pause
+
+**State Persistence**:
+- All limits stored in `drawdown_state` table
+- One record per date (daily state)
+- Carries over peak_balance and weekly counters to next day
+- On app restart: resumes with last stored state
+
+**Benefits**:
+- Multi-timeframe risk management (daily, weekly, monthly)
+- Prevents over-trading after losses
+- Automatic recovery mode reduces position size
+- Clear pause reasons for debugging
+- State survives application restarts
+
+---
+
+### 9. Hysteresis Pattern (Signal Consistency Filter)
 
 ```python
 # signal_filter.py - Prevent rapid direction reversals
@@ -590,8 +658,9 @@ Level 2 (Business Logic)
     ├─ trade_executor.py
     ├─ trailing_stop_manager.py
     ├─ signal_parser.py
-    ├─ signal_filter.py        (NEW - Phase 1)
-    ├─ risk_guard.py           (NEW - Phase 9)
+    ├─ signal_filter.py         (Phase 1)
+    ├─ drawdown_manager.py      (Phase 3)
+    ├─ risk_guard.py            (Phase 9)
     └─ claude_client.py
 
 Level 1 (Data & Broker)
@@ -751,12 +820,33 @@ CREATE TABLE signal_hashes (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Drawdown tracking state (Phase 3)
+CREATE TABLE drawdown_state (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL UNIQUE,      -- Date for daily state
+    daily_start_balance REAL,       -- Balance at day start
+    daily_pnl REAL DEFAULT 0,       -- Daily profit/loss
+    daily_trades INTEGER DEFAULT 0, -- Trades executed today
+    weekly_start_balance REAL,      -- Balance at week start
+    weekly_pnl REAL DEFAULT 0,      -- Weekly profit/loss
+    weekly_trades INTEGER DEFAULT 0,-- Trades this week
+    peak_balance REAL,              -- Peak balance for drawdown calc
+    consecutive_losses INTEGER DEFAULT 0,  -- Consecutive losing trades
+    recovery_mode INTEGER DEFAULT 0,       -- 1 if in recovery (5% drawdown)
+    trading_paused INTEGER DEFAULT 0,      -- 1 if trading paused
+    pause_reason TEXT,              -- Reason for pause
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indexes for performance
 CREATE INDEX idx_trades_status ON trades(status);
 CREATE INDEX idx_trades_ticket ON trades(ticket);
 CREATE INDEX idx_signals_status ON signals(status);
 CREATE INDEX idx_signal_hash ON signal_hashes(hash);
 CREATE INDEX idx_signal_hash_created ON signal_hashes(created_at);
+CREATE INDEX idx_drawdown_date ON drawdown_state(date);
+CREATE INDEX idx_drawdown_created ON drawdown_state(created_at);
 ```
 
 ### Data Flow in Database
@@ -1073,36 +1163,37 @@ tests/
 ├─ test_mt5.py                 (MT5 Client)
 ├─ test_signal_parser.py       (Signal Processing)
 ├─ test_signal_filter.py       (Consistency Filter - Phase 1)
-├─ test_claude_client.py       (AI Integration + Phase 3 context tests)
-├─ test_database.py            (Persistence + Phase 3 context retrieval - 20 tests)
+├─ test_drawdown_manager.py    (Drawdown tracking - Phase 3 - 19 tests)
+├─ test_claude_client.py       (AI Integration)
+├─ test_database.py            (Persistence - 20 tests)
 ├─ test_trade_executor.py      (Execution - 13 tests)
 ├─ test_trailing_stop.py       (State Machine - 16 tests)
-├─ test_integration.py         (Component integration - updated Phase 3)
+├─ test_integration.py         (Component integration)
 └─ test_telegram.py            (UI)
 
 Coverage:
 ├─ signal_filter.py            92%
+├─ drawdown_manager.py         95% (new Phase 3)
 ├─ database.py                 96%
 ├─ trade_executor.py           87%
 ├─ trailing_stop.py            84%
-├─ claude_client.py (Phase 3)  89% (new context retrieval tests)
-└─ integration.py (Phase 3)    85% (signal context flow)
+└─ integration.py              85%
 
-Total: 60+ tests passing (100%)
+Total: 90+ tests passing (100%)
 ```
 
-**Phase 3 Test Coverage**:
-- `test_claude_client.py`: 3 new context tests
-  - Context retrieval with multiple signals
-  - Wave position preservation
-  - Temporal context (minutes since last)
-- `test_database.py`: 4 new context retrieval tests
-  - Signal context retrieval
-  - Sequence building logic
-  - Edge cases (no signals, single signal)
-- `test_integration.py`: Updated for signal context flow
-  - Full flow with context passing
-  - Signal → Database → Claude → Parser → Filter
+**Phase 3 Test Coverage - Drawdown Manager**:
+- `test_drawdown_manager.py`: 19 comprehensive tests
+  - Daily loss limit (3% max)
+  - Daily trade limit (5 max)
+  - Consecutive loss pause (3 → pause)
+  - Weekly limit (6% max)
+  - Monthly drawdown (10% from peak)
+  - Recovery mode (5% → 0.5x position)
+  - State persistence across restarts
+  - Position size modifier calculation
+  - Daily/weekly reset logic
+  - Limits remaining calculation
 
 ### Test Strategy
 
@@ -1207,6 +1298,7 @@ This architecture provides:
 
 ---
 
-**Architecture Version**: 1.0
-**Last Updated**: 2026-01-04
-**Next Review**: After Phase 6 completion
+**Architecture Version**: 1.5
+**Last Updated**: 2026-01-08
+**Phase**: Phase 3 (Drawdown Manager) + Phase 9 (RiskGuard)
+**Next Review**: After Phase 10 completion

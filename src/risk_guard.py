@@ -34,6 +34,7 @@ class RiskCheckReason(str, Enum):
     CLOSE_FAILED = "close_failed"
     MT5_DISCONNECTED = "mt5_disconnected"
     TOO_CLOSE_TO_KEY_LEVEL = "too_close_to_key_level"
+    DRAWDOWN_LIMIT_EXCEEDED = "drawdown_limit_exceeded"
 
 
 @dataclass
@@ -44,6 +45,7 @@ class RiskCheckResult:
     reason: Optional[RiskCheckReason] = None
     message: str = ""
     action_taken: str = ""  # e.g., "closed_position_1234"
+    position_size_modifier: float = 1.0  # Multiplier from drawdown manager
 
 
 class RiskGuard:
@@ -55,6 +57,7 @@ class RiskGuard:
     - Total lot exposure limits
     - Direction conflict handling (close-first policy)
     - Account risk percentage limits
+    - Drawdown limits (daily/weekly/monthly)
 
     Usage:
         guard = get_risk_guard()
@@ -70,10 +73,12 @@ class RiskGuard:
         mt5: Optional[MT5Client] = None,
         db: Optional[Database] = None,
         settings=None,
+        drawdown_manager=None,
     ):
         self._mt5 = mt5
         self._db = db
         self._settings = settings
+        self._drawdown_manager = drawdown_manager
         # In-memory hash cache as fallback
         self._hash_cache: set[str] = set()
 
@@ -98,6 +103,14 @@ class RiskGuard:
             self._settings = get_settings()
         return self._settings
 
+    @property
+    def drawdown_manager(self):
+        """Lazy load drawdown manager."""
+        if self._drawdown_manager is None:
+            from src.drawdown_manager import get_drawdown_manager
+            self._drawdown_manager = get_drawdown_manager()
+        return self._drawdown_manager
+
     async def validate(self, signal: TradingSignal) -> RiskCheckResult:
         """Run all risk checks on signal.
 
@@ -116,6 +129,27 @@ class RiskGuard:
                 passed=False,
                 reason=RiskCheckReason.MT5_DISCONNECTED,
                 message="MT5 not connected, cannot validate positions",
+            )
+
+        # Check drawdown limits first (highest priority risk check)
+        account = self.mt5.get_account_info()
+        account_balance = account.get("balance", 0) if account else 0
+        position_modifier = 1.0
+
+        if account_balance > 0:
+            dd_result = self.drawdown_manager.validate(account_balance)
+            if not dd_result.trading_allowed:
+                logger.warning(
+                    f"[RiskGuard] FAILED: drawdown_check - {dd_result.pause_reason}"
+                )
+                return RiskCheckResult(
+                    passed=False,
+                    reason=RiskCheckReason.DRAWDOWN_LIMIT_EXCEEDED,
+                    message=dd_result.pause_reason or "Drawdown limit exceeded",
+                )
+            position_modifier = dd_result.position_size_modifier
+            logger.info(
+                f"[RiskGuard] PASSED: drawdown_check (modifier={position_modifier})"
             )
 
         # Run checks in order of importance
@@ -137,7 +171,7 @@ class RiskGuard:
             logger.info(f"[RiskGuard] PASSED: {check_name}")
 
         logger.info("[RiskGuard] All checks passed")
-        return RiskCheckResult(passed=True)
+        return RiskCheckResult(passed=True, position_size_modifier=position_modifier)
 
     def _generate_signal_hash(self, signal: TradingSignal) -> str:
         """Generate hash from signal content for deduplication.
