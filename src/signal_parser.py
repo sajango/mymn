@@ -24,11 +24,22 @@ class SignalAction(str, Enum):
 
 
 class TakeProfit(BaseModel):
-    """Take profit level configuration."""
+    """Take profit level configuration - v4 compatible."""
 
     level: str = Field(description="TP level (TP1, TP2, TP3)")
     price: float = Field(gt=0, description="Target price")
     close_percent: int = Field(ge=0, le=100, description="Position % to close")
+    # NEW v4 fields (optional for backward compat)
+    fib_basis: Optional[str] = Field(default=None, description="Fibonacci basis")
+    confluence_count: Optional[int] = Field(
+        default=None, description="Number of confluence factors"
+    )
+    probability: Optional[int] = Field(default=None, ge=0, le=100)
+    risk_reward: Optional[float] = Field(default=None, ge=0)
+    rr_adjusted: bool = Field(
+        default=False, description="Was R:R adjusted for min threshold"
+    )
+    note: Optional[str] = Field(default=None)
 
 
 class TrailingStopConfig(BaseModel):
@@ -227,6 +238,79 @@ class PivotQuality(BaseModel):
     filtered_noise: int = Field(default=0, description="Noise pivots filtered")
 
 
+class MarketRegime(BaseModel):
+    """Market regime detection from instruction_v4."""
+
+    classification: str = Field(
+        description="trending_strong, trending_weak, ranging, choppy"
+    )
+    adx_14: Optional[float] = Field(default=None, description="ADX 14 value")
+    trend_direction: str = Field(
+        default="neutral", description="bullish/bearish/neutral"
+    )
+    trend_strength: str = Field(
+        default="moderate", description="very_strong/strong/moderate/weak/absent"
+    )
+    ema_spread_percent: Optional[float] = Field(
+        default=None, description="EMA 34-89 spread %"
+    )
+    volatility_regime: str = Field(default="normal", description="Volatility regime")
+    elliott_wave_reliability: str = Field(
+        default="medium", description="high/medium/low/not_recommended"
+    )
+    confidence_modifier: int = Field(default=0, description="Confidence adjustment")
+    recommended_action: str = Field(
+        default="full_analysis",
+        description="full_analysis/cautious_analysis/skip_ew/wait",
+    )
+    warnings: list[str] = Field(default_factory=list, description="Regime warnings")
+
+
+class TimeframeWave(BaseModel):
+    """Wave analysis for single timeframe."""
+
+    degree: str = Field(description="Primary/Intermediate/Minor/Minute")
+    current_wave: str = Field(description="Wave label e.g. (3), 4, [c]")
+    wave_label: str = Field(description="Full label e.g. '(3) of Primary'")
+    position_in_sequence: str = Field(description="impulse_wave_3_of_5")
+    structure: str = Field(default="impulse", description="impulse/corrective")
+    subwaves_expected: Optional[int] = Field(default=None)
+    parent_wave: Optional[str] = Field(default=None, description="Parent wave reference")
+
+
+class WaveStructure(BaseModel):
+    """Multi-timeframe wave structure from v4."""
+
+    h4: Optional[TimeframeWave] = Field(default=None)
+    h1: Optional[TimeframeWave] = Field(default=None)
+    m30: Optional[TimeframeWave] = Field(default=None)
+    m15: Optional[TimeframeWave] = Field(default=None)
+    alignment_status: str = Field(
+        default="UNKNOWN", description="ALIGNED/CONFLICT/WARNING"
+    )
+    alignment_confidence_modifier: int = Field(default=0)
+
+
+class TakeProfitConfluence(BaseModel):
+    """Confluence details for TP level."""
+
+    count: int = Field(default=0, description="Number of confluence factors")
+    details: list[str] = Field(
+        default_factory=list, description="Confluence descriptions"
+    )
+
+
+class PreTradeChecks(BaseModel):
+    """Pre-trade validation summary from v4."""
+
+    trading_allowed: bool = Field(default=True)
+    regime_suitable: bool = Field(default=True)
+    session_suitable: bool = Field(default=True)
+    spread_ok: bool = Field(default=True)
+    risk_budget_available: bool = Field(default=True)
+    all_checks_passed: bool = Field(default=True)
+
+
 class Metadata(BaseModel):
     """Analysis metadata."""
 
@@ -241,8 +325,9 @@ class Metadata(BaseModel):
         default=None, description="Analysis timestamp"
     )
     model_version: str = Field(
-        default="elliott_wave_v2.0", description="Model version"
+        default="elliott_wave_v4.0", description="Model version"
     )
+    features_used: list[str] = Field(default_factory=list, description="Features used")
 
 
 class Signal(BaseModel):
@@ -270,7 +355,7 @@ class Signal(BaseModel):
 
 
 class TradingSignal(BaseModel):
-    """Complete trading signal from Claude analysis."""
+    """Complete trading signal from Claude analysis - v4 compatible."""
 
     timestamp: str = Field(description="Signal generation timestamp")
     symbol: str = Field(default="XAUUSD", description="Trading symbol")
@@ -294,6 +379,16 @@ class TradingSignal(BaseModel):
         default=None, description="Execution instructions"
     )
     metadata: Optional[Metadata] = Field(default=None, description="Analysis metadata")
+    # NEW v4 fields
+    pre_trade_checks: Optional[PreTradeChecks] = Field(
+        default=None, description="Pre-trade validation summary"
+    )
+    market_regime: Optional[MarketRegime] = Field(
+        default=None, description="Market regime detection"
+    )
+    wave_structure: Optional[WaveStructure] = Field(
+        default=None, description="Multi-timeframe wave structure"
+    )
 
     @field_validator("timestamp", mode="before")
     @classmethod

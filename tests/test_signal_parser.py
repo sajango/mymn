@@ -12,14 +12,19 @@ from src.signal_parser import (
     ConfidenceBreakdown,
     ExecutionInstructions,
     Indicators,
+    MarketRegime,
+    PreTradeChecks,
     SessionContext,
     Signal,
     SignalAction,
     SpreadCheck,
     TakeProfit,
+    TakeProfitConfluence,
+    TimeframeWave,
     TrailingStopConfig,
     TradingSignal,
     WaveAnalysis,
+    WaveStructure,
     create_no_trade_signal,
     extract_json_from_response,
     parse_trading_signal,
@@ -662,6 +667,307 @@ class TestSubModels:
         )
         assert ei.order_type == "LIMIT"
         assert "price_exceeds_3355" in ei.cancel_if
+
+
+class TestV4Models:
+    """Test v4 new models."""
+
+    def test_market_regime(self) -> None:
+        """Test MarketRegime model."""
+        regime = MarketRegime(
+            classification="trending_strong",
+            adx_14=32.5,
+            trend_direction="bullish",
+            trend_strength="strong",
+            elliott_wave_reliability="high",
+            confidence_modifier=15,
+        )
+        assert regime.classification == "trending_strong"
+        assert regime.adx_14 == 32.5
+        assert regime.confidence_modifier == 15
+
+    def test_market_regime_defaults(self) -> None:
+        """Test MarketRegime defaults."""
+        regime = MarketRegime(classification="ranging")
+        assert regime.trend_direction == "neutral"
+        assert regime.trend_strength == "moderate"
+        assert regime.elliott_wave_reliability == "medium"
+        assert regime.confidence_modifier == 0
+        assert regime.warnings == []
+
+    def test_timeframe_wave(self) -> None:
+        """Test TimeframeWave model."""
+        wave = TimeframeWave(
+            degree="Primary",
+            current_wave="(3)",
+            wave_label="(3) of Primary impulse",
+            position_in_sequence="impulse_wave_3_of_5",
+            structure="impulse",
+            subwaves_expected=5,
+        )
+        assert wave.degree == "Primary"
+        assert wave.current_wave == "(3)"
+        assert wave.subwaves_expected == 5
+
+    def test_wave_structure(self) -> None:
+        """Test WaveStructure model."""
+        h4_wave = TimeframeWave(
+            degree="Primary",
+            current_wave="(3)",
+            wave_label="(3) of Primary",
+            position_in_sequence="impulse_wave_3_of_5",
+        )
+        h1_wave = TimeframeWave(
+            degree="Intermediate",
+            current_wave="4",
+            wave_label="4 of (3)",
+            position_in_sequence="correction_within_impulse",
+            parent_wave="H4_(3)",
+        )
+        ws = WaveStructure(
+            h4=h4_wave,
+            h1=h1_wave,
+            alignment_status="ALIGNED",
+            alignment_confidence_modifier=10,
+        )
+        assert ws.h4.degree == "Primary"
+        assert ws.h1.parent_wave == "H4_(3)"
+        assert ws.alignment_status == "ALIGNED"
+
+    def test_take_profit_confluence(self) -> None:
+        """Test TakeProfitConfluence model."""
+        confluence = TakeProfitConfluence(
+            count=3, details=["EMA support", "Fib 61.8%", "Previous resistance"]
+        )
+        assert confluence.count == 3
+        assert len(confluence.details) == 3
+
+    def test_take_profit_v4_enhanced(self) -> None:
+        """Test enhanced TakeProfit with v4 fields."""
+        tp = TakeProfit(
+            level="TP1",
+            price=3380.00,
+            close_percent=40,
+            fib_basis="61.8% of Wave 1",
+            confluence_count=2,
+            probability=80,
+            risk_reward=1.73,
+        )
+        assert tp.fib_basis == "61.8% of Wave 1"
+        assert tp.confluence_count == 2
+        assert tp.probability == 80
+        assert tp.risk_reward == 1.73
+
+    def test_pre_trade_checks(self) -> None:
+        """Test PreTradeChecks model."""
+        checks = PreTradeChecks(
+            trading_allowed=True,
+            regime_suitable=True,
+            session_suitable=True,
+            spread_ok=True,
+            risk_budget_available=True,
+            all_checks_passed=True,
+        )
+        assert checks.all_checks_passed is True
+
+    def test_pre_trade_checks_defaults(self) -> None:
+        """Test PreTradeChecks defaults."""
+        checks = PreTradeChecks()
+        assert checks.trading_allowed is True
+        assert checks.all_checks_passed is True
+
+
+class TestV4SignalParsing:
+    """Test parsing v4 format signals."""
+
+    def test_parse_v4_signal_with_market_regime(self) -> None:
+        """Test parsing v4 signal with market_regime."""
+        v4_json = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "market_regime": {
+                "classification": "trending_strong",
+                "adx_14": 32.5,
+                "trend_direction": "bullish",
+                "elliott_wave_reliability": "high",
+                "confidence_modifier": 15
+            },
+            "signal": {"action": "BUY", "confidence": 78}
+        }
+        ```'''
+        signal = parse_trading_signal(v4_json)
+        assert signal is not None
+        assert signal.market_regime is not None
+        assert signal.market_regime.classification == "trending_strong"
+        assert signal.market_regime.confidence_modifier == 15
+
+    def test_parse_v4_signal_with_pre_trade_checks(self) -> None:
+        """Test parsing v4 signal with pre_trade_checks."""
+        v4_json = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "pre_trade_checks": {
+                "trading_allowed": true,
+                "regime_suitable": true,
+                "session_suitable": true,
+                "spread_ok": true,
+                "all_checks_passed": true
+            },
+            "signal": {"action": "SELL", "confidence": 72}
+        }
+        ```'''
+        signal = parse_trading_signal(v4_json)
+        assert signal is not None
+        assert signal.pre_trade_checks is not None
+        assert signal.pre_trade_checks.all_checks_passed is True
+
+    def test_parse_v4_signal_with_wave_structure(self) -> None:
+        """Test parsing v4 signal with wave_structure."""
+        v4_json = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "wave_structure": {
+                "h4": {
+                    "degree": "Primary",
+                    "current_wave": "(3)",
+                    "wave_label": "(3) of Primary impulse",
+                    "position_in_sequence": "impulse_wave_3_of_5",
+                    "structure": "impulse"
+                },
+                "h1": {
+                    "degree": "Intermediate",
+                    "current_wave": "4",
+                    "wave_label": "4 of (3)",
+                    "position_in_sequence": "correction_within_impulse",
+                    "parent_wave": "H4_(3)"
+                },
+                "alignment_status": "ALIGNED",
+                "alignment_confidence_modifier": 10
+            },
+            "signal": {"action": "BUY", "confidence": 85}
+        }
+        ```'''
+        signal = parse_trading_signal(v4_json)
+        assert signal is not None
+        assert signal.wave_structure is not None
+        assert signal.wave_structure.h4.degree == "Primary"
+        assert signal.wave_structure.h1.parent_wave == "H4_(3)"
+        assert signal.wave_structure.alignment_status == "ALIGNED"
+
+    def test_parse_v4_enhanced_take_profit(self) -> None:
+        """Test parsing v4 enhanced take_profit with confluence."""
+        v4_json = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "BUY",
+                "confidence": 78,
+                "entry_price": 3340.00,
+                "stop_loss": 3310.00,
+                "take_profit": [
+                    {
+                        "level": "TP1",
+                        "price": 3380.00,
+                        "close_percent": 40,
+                        "fib_basis": "61.8% of Wave 1",
+                        "confluence_count": 2,
+                        "probability": 80,
+                        "risk_reward": 1.73
+                    }
+                ]
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(v4_json)
+        assert signal is not None
+        assert len(signal.signal.take_profit) == 1
+        tp = signal.signal.take_profit[0]
+        assert tp.fib_basis == "61.8% of Wave 1"
+        assert tp.confluence_count == 2
+        assert tp.probability == 80
+
+    def test_parse_full_v4_signal(self) -> None:
+        """Test parsing complete v4 signal structure."""
+        v4_json = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "pre_trade_checks": {
+                "trading_allowed": true,
+                "all_checks_passed": true
+            },
+            "market_regime": {
+                "classification": "trending_strong",
+                "trend_direction": "bullish",
+                "elliott_wave_reliability": "high"
+            },
+            "wave_structure": {
+                "h4": {
+                    "degree": "Primary",
+                    "current_wave": "(3)",
+                    "wave_label": "(3) of Primary",
+                    "position_in_sequence": "impulse_wave_3_of_5"
+                },
+                "alignment_status": "ALIGNED"
+            },
+            "wave_analysis": {
+                "h4_trend": "bullish",
+                "current_wave": "wave_4_complete"
+            },
+            "signal": {
+                "action": "BUY",
+                "entry_price": 3340.00,
+                "stop_loss": 3310.00,
+                "confidence": 78,
+                "take_profit": [
+                    {"level": "TP1", "price": 3380.00, "close_percent": 40}
+                ]
+            },
+            "metadata": {
+                "model_version": "elliott_wave_v4.0",
+                "features_used": ["market_regime_filter", "wave_degree_labeling"]
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(v4_json)
+        assert signal is not None
+        assert signal.pre_trade_checks.all_checks_passed is True
+        assert signal.market_regime.classification == "trending_strong"
+        assert signal.wave_structure.h4.degree == "Primary"
+        assert signal.wave_analysis.h4_trend == "bullish"
+        assert signal.metadata.model_version == "elliott_wave_v4.0"
+        assert "market_regime_filter" in signal.metadata.features_used
+
+    def test_v4_backward_compat_with_v2_signal(self) -> None:
+        """Test v4 models backward compatible with v2 format."""
+        v2_json = '''```json
+        {
+            "timestamp": "2024-08-21T14:30:00Z",
+            "symbol": "XAUUSD",
+            "signal": {
+                "action": "BUY",
+                "confidence": 75,
+                "take_profit": [
+                    {"level": "TP1", "price": 3380.00, "close_percent": 50}
+                ]
+            },
+            "wave_analysis": {
+                "h4_trend": "bullish",
+                "current_wave": "wave_4_complete"
+            }
+        }
+        ```'''
+        signal = parse_trading_signal(v2_json)
+        assert signal is not None
+        assert signal.signal.action.value == "BUY"
+        # v4 fields should be None for v2 signals
+        assert signal.pre_trade_checks is None
+        assert signal.market_regime is None
+        assert signal.wave_structure is None
 
 
 if __name__ == "__main__":

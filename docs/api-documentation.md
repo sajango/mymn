@@ -1,7 +1,7 @@
 # API Documentation - MT5 Elliott Wave Trading System
 
-**Last Updated**: 2026-01-06
-**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation)
+**Last Updated**: 2026-01-08
+**Current Phase**: Phase 2 (Model Updates - v4 Compatibility)
 
 ## Table of Contents
 
@@ -351,70 +351,186 @@ if mt5.validate_symbol("XAUUSD"):
 ## Signal Parser API
 
 ### Overview
-Handles trading signal models, JSON extraction, and validation.
+Handles trading signal models, JSON extraction, and validation. **v4 compatible** with enhanced Elliott Wave, market regime, and multi-timeframe support.
 
-### Classes and Functions
+### Core Classes and Functions
 
-#### `class TradingSignal(BaseModel)`
-Main trading signal model.
+#### `class TradingSignal(BaseModel)` - v4
+Complete trading signal with enhanced market context.
 
-**Fields**:
+**Core Fields**:
 ```python
-timestamp: datetime          # When signal was generated
-symbol: str                 # Trading symbol
-signal: TradeInstruction    # Trade details
-metadata: SignalMetadata    # Additional context
-execution_instructions: Optional[str]  # Special instructions
+timestamp: str                              # Signal generation timestamp (ISO 8601)
+symbol: str                                 # Trading symbol (default: "XAUUSD")
+signal: Signal                              # Trade execution details
+session_context: Optional[SessionContext]   # Trading session info
+spread_check: Optional[SpreadCheck]         # Spread validation
+wave_analysis: Optional[WaveAnalysis]       # Elliott Wave analysis
+indicators: Optional[Indicators]            # Technical indicators
+confidence_breakdown: Optional[ConfidenceBreakdown]  # Score breakdown
+execution_instructions: Optional[ExecutionInstructions]  # Order execution rules
+metadata: Optional[Metadata]                # Analysis metadata
 ```
 
-#### `class TradeInstruction(BaseModel)`
-Core trade instruction details.
-
-**Fields**:
+**NEW v4 Fields**:
 ```python
-action: Literal["BUY", "SELL"]     # Trade direction
-entry_price: float                 # Entry price
-stop_loss: float                   # Stop loss price
-take_profit: list[TradeLevel]     # TP levels (TP1, TP2, TP3)
-confidence: int                    # Confidence 0-100
+pre_trade_checks: Optional[PreTradeChecks]  # Pre-trade validation summary
+market_regime: Optional[MarketRegime]       # Market regime detection
+wave_structure: Optional[WaveStructure]     # Multi-timeframe wave structure
 ```
 
-#### `class TradeLevel(BaseModel)`
-Take profit level definition.
+#### `class Signal(BaseModel)` - v4
+Core trading instruction with enhanced TP and confidence.
 
 **Fields**:
 ```python
-level: str              # "TP1", "TP2", or "TP3"
-price: float           # Price level
-close_percent: int     # % of position to close (0-100)
+action: SignalAction                        # BUY, BUY_LIMIT, SELL, SELL_LIMIT, NO_TRADE, WAIT
+entry_price: Optional[float]                # Entry price
+stop_loss: Optional[float]                  # Stop loss price (atr-based or fixed)
+stop_loss_atr: Optional[float]              # ATR-based stop loss distance
+take_profit: list[TakeProfit]               # Multi-level TP configuration
+trailing_stop: Optional[TrailingStopConfig] # Trailing stop settings
+risk_reward: Optional[float]                # Risk:Reward ratio
+confidence: int                             # Confidence score 0-100
+position_size: Optional[PositionSize]       # Position sizing details
+reason: Optional[str]                       # No-trade reason explanation
+details: Optional[str]                      # Additional signal details
 ```
 
-#### `class SignalMetadata(BaseModel)`
-Signal context information.
+#### `class TakeProfit(BaseModel)` - v4 Enhanced
+Take profit level with confluence and Fibonacci data.
 
 **Fields**:
 ```python
-session: str                    # Trading session (London, NY, Asian)
-spread_check: bool             # Spread acceptable
-confidence_breakdown: dict     # Score components
-timeframe_analysis: str        # Which timeframes used
-wave_count: Optional[str]      # Elliott Wave count
+level: str                                  # TP level label (TP1, TP2, TP3)
+price: float                                # Target price (gt > 0)
+close_percent: int                          # Position % to close (0-100)
+fib_basis: Optional[str]                    # Fibonacci basis (NEW v4)
+confluence_count: Optional[int]             # Number of confluence factors (NEW v4)
+probability: Optional[int]                  # TP probability % (NEW v4)
+risk_reward: Optional[float]                # R:R for this level (NEW v4)
+rr_adjusted: bool                           # Was R:R adjusted for min threshold (NEW v4)
+note: Optional[str]                         # Additional notes (NEW v4)
+```
+
+#### `class MarketRegime(BaseModel)` - NEW v4
+Market regime classification from instruction_v4.
+
+**Fields**:
+```python
+classification: str                         # trending_strong|trending_weak|ranging|choppy
+adx_14: Optional[float]                     # ADX 14 value
+trend_direction: str                        # bullish|bearish|neutral
+trend_strength: str                         # very_strong|strong|moderate|weak|absent
+ema_spread_percent: Optional[float]         # EMA 34-89 spread percentage
+volatility_regime: str                      # Volatility classification
+elliott_wave_reliability: str               # high|medium|low|not_recommended
+confidence_modifier: int                    # Confidence adjustment value
+recommended_action: str                     # full_analysis|cautious_analysis|skip_ew|wait
+warnings: list[str]                         # Regime-specific warnings
+```
+
+#### `class TimeframeWave(BaseModel)` - NEW v4
+Wave analysis for single timeframe.
+
+**Fields**:
+```python
+degree: str                                 # Primary|Intermediate|Minor|Minute
+current_wave: str                           # Wave label (e.g., (3), 4, [c])
+wave_label: str                             # Full label (e.g., '(3) of Primary')
+position_in_sequence: str                   # Sequence description
+structure: str                              # impulse|corrective
+subwaves_expected: Optional[int]            # Expected subwave count
+parent_wave: Optional[str]                  # Parent wave reference
+```
+
+#### `class WaveStructure(BaseModel)` - NEW v4
+Multi-timeframe wave alignment from v4.
+
+**Fields**:
+```python
+h4: Optional[TimeframeWave]                 # H4 timeframe wave
+h1: Optional[TimeframeWave]                 # H1 timeframe wave
+m30: Optional[TimeframeWave]                # M30 timeframe wave
+m15: Optional[TimeframeWave]                # M15 timeframe wave
+alignment_status: str                       # ALIGNED|CONFLICT|WARNING
+alignment_confidence_modifier: int          # Confidence adjustment for alignment
+```
+
+#### `class TakeProfitConfluence(BaseModel)` - NEW v4
+Confluence details for TP level.
+
+**Fields**:
+```python
+count: int                                  # Number of confluence factors
+details: list[str]                          # Confluence descriptions
+```
+
+#### `class PreTradeChecks(BaseModel)` - NEW v4
+Pre-trade validation summary.
+
+**Fields**:
+```python
+trading_allowed: bool                       # Overall trading permission
+regime_suitable: bool                       # Market regime suitability
+session_suitable: bool                      # Session suitability
+spread_ok: bool                             # Spread within limits
+risk_budget_available: bool                 # Risk budget available
+all_checks_passed: bool                     # All validations passed
+```
+
+#### Supporting Classes (v4)
+
+**WaveAnalysis**:
+```python
+h4_trend: str                               # H4 trend direction
+current_wave: str                           # Current wave position
+wave_position: Optional[str]                # Detailed wave position for tracking (NEW)
+wave_count_valid: bool                      # Wave count validity
+rules_check: Optional[RulesCheck]           # Elliott Wave rules validation
+primary_scenario: Optional[WaveScenario]    # Primary wave scenario
+alternative_scenario: Optional[WaveScenario] # Alternative scenario
+invalidation_price: Optional[float]         # Price that invalidates count
+```
+
+**Indicators** (enhanced):
+```python
+rsi: Optional[RSIIndicator]                 # RSI analysis with divergence
+ema: Optional[EMAIndicator]                 # EMA 34/89 with price position
+macd: Optional[MACDIndicator]               # MACD with momentum
+atr: Optional[ATRIndicator]                 # ATR with volatility regime
+```
+
+**ConfidenceBreakdown** (enhanced):
+```python
+base_score: int                             # Base confidence (default: 50)
+timeframe_alignment: int                    # Bonus from TF alignment
+fibonacci_confluence: int                   # Bonus from Fib confluence
+rsi_confirmation: int                       # RSI signal bonus
+ema_alignment: int                          # EMA alignment bonus
+macd_confirmation: int                      # MACD divergence bonus
+session_bonus: int                          # Session quality bonus/penalty
+penalties: int                              # Total penalty amount
+penalty_reasons: list[str]                  # Explanation of penalties
+total: int                                  # Final score 0-100
 ```
 
 #### `extract_json_from_response(response: str) -> Optional[dict]`
-Extract JSON from Claude response with fallback strategies.
+Extract JSON from Claude response with 5 fallback strategies.
 
 **Parameters**:
 - `response` (str): Claude API response text
 
 **Returns**:
-- `dict`: Parsed JSON
+- `dict`: Parsed JSON object
 - `None`: If all extraction strategies failed
 
 **Strategies** (in order):
-1. Find JSON block (```json ... ```)
-2. Find raw JSON object/array
-3. Ask Claude to extract JSON (recursive)
+1. JSON code block (`\`\`\`json ... \`\`\``)
+2. Generic code block (`\`\`\` ... \`\`\``)
+3. Raw JSON object at start (within 50 chars)
+4. JSON object anywhere in response (validates required keys: "signal", "timestamp")
+5. Markdown fallback - extract structured data from markdown tables/text
 
 **Example**:
 ```python
@@ -423,79 +539,98 @@ data = extract_json_from_response(response)
 signal = TradingSignal.model_validate(data)
 ```
 
-#### `parse_signal(data: dict) -> TradingSignal`
-Convert raw data to validated TradingSignal.
-
-**Parameters**:
-- `data` (dict): Signal data (from JSON extraction)
-
-**Returns**: `TradingSignal` object
-
-**Raises**: `ValueError` if validation fails
-
-**Example**:
-```python
-signal = parse_signal({
-    "timestamp": "2026-01-04T12:00:00Z",
-    "symbol": "XAUUSD",
-    "signal": {
-        "action": "BUY",
-        "entry_price": 2000.00,
-        "stop_loss": 1990.00,
-        "take_profit": [
-            {"level": "TP1", "price": 2010.00, "close_percent": 25},
-            {"level": "TP2", "price": 2020.00, "close_percent": 35},
-            {"level": "TP3", "price": 2030.00, "close_percent": 40}
-        ],
-        "confidence": 85
-    },
-    "metadata": {...}
-})
-```
-
 #### `parse_trading_signal(response: str) -> Optional[TradingSignal]`
-End-to-end signal parsing with data normalization.
+End-to-end signal parsing with comprehensive data normalization (v4 compatible).
 
 **Parameters**:
 - `response` (str): Claude API response containing trading signal
 
 **Returns**: `TradingSignal` object or `None` if parsing fails
 
-**Data Normalization** (Phase 2):
-The parser automatically handles multiple Claude response formats:
+**Data Normalization** (Phase 2 - v4 Extended):
 
-1. **Elliott Wave Analysis Extraction**:
-   - Extracts `wave_position` from `signal.elliott_wave_analysis`
-   - Supports multiple source formats:
-     - `elliott_wave_analysis.wave_position`
-     - `elliott_wave_analysis.current_wave`
-     - `elliott_wave_analysis.primary_count.wave_position`
-   - Extracts H4 trend direction (bullish/bearish)
-   - Creates `wave_analysis` object with normalized data
+1. **Action/Direction Mapping**:
+   - Normalizes field names: `direction` → `action`
+   - Maps direction values: `BULLISH`→`BUY`, `BEARISH`→`SELL`, `NEUTRAL`→`NO_TRADE`
 
-2. **Fallback Logic**:
-   - If `wave_analysis.wave_position` missing, uses `current_wave`
-   - Converts all wave data to string format
-   - Preserves existing `wave_analysis` if provided
+2. **Confidence Score Normalization**:
+   - Converts 0-1 float to 0-100 int
+   - Maps text levels: `HIGH`→80, `MEDIUM`→60, `LOW`→40, `VERY_HIGH`→90, `VERY_LOW`→20
 
-**Example** (Multi-format support):
+3. **Risk/Reward Ratio Handling**:
+   - Parses ratio string format (`"1:3.5"` → 3.5)
+   - Extracts from dict: `rr_ratio_tp1`, `rr_ratio`, or calculates from pips
+   - Field name mapping: `risk_reward_ratio` → `risk_reward`
+
+4. **Elliott Wave & Wave Position Extraction**:
+   - Extracts `wave_position` from multiple sources:
+     - `signal.elliott_wave_analysis.wave_position`
+     - `signal.elliott_wave_analysis.current_wave`
+     - `signal.elliott_wave_analysis.primary_count.wave_position`
+   - Extracts H4 trend from `timeframe_analysis.h4.trend` or `h4_structure`
+   - Creates/updates `wave_analysis` object with normalized data
+   - Fallback: uses `current_wave` if `wave_position` missing
+
+5. **Take Profit Array Normalization**:
+   - Converts single float TP to array: `2010.0` → `[{level: "TP1", price: 2010.0, close_percent: 100}]`
+   - Consolidates `take_profit_1/2/3` fields into `take_profit` array
+   - Normalizes array items:
+     - Converts level int to string: `1` → `"TP1"`
+     - Converts ratio to close_percent: `0.5` → `50`
+     - Applies default percentages: TP1=40%, TP2=35%, TP3=25%
+
+6. **v4 Enhanced Fields** (NEW):
+   - Preserves new v4 optional fields in TradingSignal:
+     - `pre_trade_checks`: Pre-validation summary
+     - `market_regime`: Market regime classification
+     - `wave_structure`: Multi-timeframe wave alignment
+   - Handles new TakeProfit v4 fields:
+     - `fib_basis`, `confluence_count`, `probability`, `risk_reward`, `rr_adjusted`, `note`
+
+**Example** (Multi-format support with v4):
 ```python
-# Format A: wave_position at top level
+# Format A: v4 with market_regime
 response1 = '''```json
-{"timestamp": "...", "symbol": "XAUUSD",
- "signal": {"action": "BUY", "elliott_wave_analysis": {"wave_position": "Wave 3"}}}
+{
+  "timestamp": "2026-01-08T10:00:00Z",
+  "symbol": "XAUUSD",
+  "signal": {"action": "BUY", "confidence": 85},
+  "market_regime": {
+    "classification": "trending_strong",
+    "trend_direction": "bullish",
+    "confidence_modifier": 10
+  },
+  "wave_structure": {
+    "h4": {"current_wave": "3", "degree": "Primary"},
+    "alignment_status": "ALIGNED"
+  }
+}
 ```'''
 
-# Format B: wave_position in primary_count
+# Format B: v4 enhanced TakeProfit
 response2 = '''```json
-{"timestamp": "...", "symbol": "XAUUSD",
- "signal": {"action": "BUY",
-   "elliott_wave_analysis": {"primary_count": {"wave_position": "Impulse wave"}}}}
+{
+  "timestamp": "2026-01-08T10:00:00Z",
+  "symbol": "XAUUSD",
+  "signal": {
+    "action": "BUY",
+    "take_profit": [
+      {
+        "level": "TP1",
+        "price": 2010.0,
+        "close_percent": 40,
+        "fib_basis": "0.618",
+        "confluence_count": 3,
+        "probability": 85
+      }
+    ]
+  }
+}
 ```'''
 
 signal1 = parse_trading_signal(response1)
 signal2 = parse_trading_signal(response2)
-# Both normalize to: signal.wave_analysis.wave_position
+# Both parse successfully with v4 fields
 ```
 
 ---
@@ -1392,6 +1527,19 @@ MIN_CONFIDENCE = 50             # < 50% = skip
 ---
 
 ## Changelog
+
+### Phase 2 Updates (2026-01-08) - Model v4 Enhancements
+**Signal Parser API - v4 Model Compatibility**:
+- 6 new v4 model classes: `MarketRegime`, `TimeframeWave`, `WaveStructure`, `TakeProfitConfluence`, `PreTradeChecks`, `TrailingStopConfig`, `PositionSize`
+- Enhanced `TradingSignal`: 3 new top-level fields (`pre_trade_checks`, `market_regime`, `wave_structure`)
+- Enhanced `TakeProfit`: 6 new optional fields (`fib_basis`, `confluence_count`, `probability`, `risk_reward`, `rr_adjusted`, `note`)
+- Enhanced `Signal`: New fields for ATR-based SL and trailing stop configuration
+- Enhanced `WaveAnalysis`: New `wave_position` field for detailed tracking
+- Enhanced `ConfidenceBreakdown`: Expanded with `penalty_reasons` list
+- Enhanced `Indicators`: Support for RSI divergence, EMA price position, MACD momentum, ATR volatility regime
+- Extended data normalization: v4 field preservation, Fibonacci basis mapping, confluence handling
+- Improved JSON extraction: 5-strategy fallback including markdown parsing
+- Backward compatible: All v4 fields are optional
 
 ### Phase 9 Additions (2026-01-06)
 - RiskGuard API complete documentation
