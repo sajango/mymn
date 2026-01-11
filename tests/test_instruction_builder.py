@@ -577,3 +577,35 @@ class TestFeedbackLoopIntegration:
         # Verify token budget
         token_count = builder.estimate_tokens(result)
         assert token_count <= 15000, f"Assembly ({token_count} tokens) should stay under budget"
+
+
+class TestDeploymentConfig:
+    """Tests for deployment configuration (Phase 6)."""
+
+    def test_custom_token_budget(self):
+        """Test InstructionBuilder respects custom token budget."""
+        builder = InstructionBuilder(token_budget=20000)
+        assert builder.token_budget == 20000
+
+    def test_default_token_budget(self):
+        """Test InstructionBuilder uses default token budget."""
+        from src.instruction_builder import DEFAULT_TOKEN_BUDGET
+        builder = InstructionBuilder()
+        # Should use either config or DEFAULT_TOKEN_BUDGET
+        assert builder.token_budget >= 8000  # Minimum from config constraint
+        assert builder.token_budget <= 25000  # Maximum from config constraint
+
+    def test_token_budget_used_in_validation(self):
+        """Test token budget is used in build validation."""
+        builder = InstructionBuilder(token_budget=20000)
+        builder.clear_cache()
+
+        result = builder.build(
+            market_regime={"adx": 30},
+            signal_context={"looking_for": "entry"}
+        )
+
+        # Assembly should complete and use the budget
+        assert result
+        token_count = builder.estimate_tokens(result)
+        assert token_count <= builder.token_budget

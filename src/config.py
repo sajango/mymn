@@ -113,6 +113,17 @@ class Settings(BaseSettings):
         default=30, ge=10, le=60, description="Time window to detect rapid flip-flop"
     )
     
+    # Instruction System Settings
+    use_modular_instructions: bool = Field(
+        default=True, description="Use InstructionBuilder for dynamic instruction assembly"
+    )
+    instruction_token_budget: int = Field(
+        default=15000, ge=8000, le=25000, description="Maximum token budget for assembled instructions"
+    )
+    instruction_fallback_enabled: bool = Field(
+        default=True, description="Fall back to instruction_v4.md if modular assembly fails"
+    )
+
     # Market Regime Parameters
     regime_trend_threshold_weak: int = Field(
         default=20, ge=10, le=30, description="ADX threshold for weak trend"

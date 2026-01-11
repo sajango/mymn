@@ -13,14 +13,31 @@ from functools import lru_cache
 logger = logging.getLogger(__name__)
 
 INSTRUCTIONS_DIR = Path(__file__).parent / "instructions"  # src/instructions/
+DEFAULT_TOKEN_BUDGET = 15000
 
 
 class InstructionBuilder:
     """Assemble instruction set dynamically based on market conditions."""
 
-    def __init__(self):
+    def __init__(self, token_budget: Optional[int] = None):
+        """Initialize InstructionBuilder.
+
+        Args:
+            token_budget: Maximum token budget for assembled instructions.
+                         If None, uses config value or DEFAULT_TOKEN_BUDGET.
+        """
         self.instructions_dir = INSTRUCTIONS_DIR
         self._cache = {}
+
+        # Load token budget from config or use default
+        if token_budget is not None:
+            self.token_budget = token_budget
+        else:
+            try:
+                from src.config import get_settings
+                self.token_budget = get_settings().instruction_token_budget
+            except Exception:
+                self.token_budget = DEFAULT_TOKEN_BUDGET
 
     @lru_cache(maxsize=32)
     def _load_module(self, relative_path: str) -> str:
@@ -86,16 +103,20 @@ class InstructionBuilder:
         # Join with clear section separators
         assembled = "\n\n---\n\n".join(filter(None, parts))
 
-        # Token count validation
+        # Token count validation and metrics logging
         token_estimate = self.estimate_tokens(assembled)
-        logger.info(f"[INSTRUCTIONS] Assembled ~{token_estimate} tokens")
+        logger.info(
+            f"[INSTRUCTIONS] Assembled ~{token_estimate} tokens | "
+            f"Budget: {self.token_budget} | "
+            f"Regime: {regime_module.split('/')[-1].replace('.md', '')}"
+        )
 
-        if token_estimate > 15000:
+        if token_estimate > self.token_budget:
             logger.warning(
-                f"[INSTRUCTIONS] Token count ({token_estimate}) exceeds 15K budget!"
+                f"[INSTRUCTIONS] Token count ({token_estimate}) exceeds {self.token_budget} budget!"
             )
-        elif token_estimate > 12000:
-            logger.info(f"[INSTRUCTIONS] Token count within target range (12-15K)")
+        elif token_estimate > self.token_budget * 0.8:
+            logger.info(f"[INSTRUCTIONS] Token count within target range (80-100% of budget)")
 
         return assembled
 
