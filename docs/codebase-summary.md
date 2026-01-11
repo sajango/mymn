@@ -1,8 +1,8 @@
 # MT5 Elliott Wave Trading System - Codebase Summary
 
 **Last Updated**: 2026-01-11
-**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation) + Phase 1 Instruction Refactoring
-**Total Repository**: 182,047 tokens, 781,719 characters, 84 files (includes dashboard and tests)
+**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation) + Phase 1 Instruction Refactoring + Phase 3 (Content Extraction)
+**Total Repository**: 299,785 tokens, 1,119,259 characters, 92 files (includes dashboard, instructions, tests)
 
 ## Quick Overview
 
@@ -120,9 +120,9 @@ Configuration (Phase 9 additions):
 - `key_level_proximity_min_pips` (default: 10.0)
 - `key_level_proximity_atr_multiplier` (default: 1.5)
 
-### Layer 6.5: Modular Instruction System (Phase 1 - NEW)
+### Layer 6.5: Modular Instruction System (Phase 1-3)
 ```
-src/instructions/          - Elliott Wave instruction modules (Phase 1)
+src/instructions/          - Elliott Wave instruction modules
 ├── core/
 │   ├── essential-rules.md     - Elliott Wave inviolable rules
 │   ├── confidence-scoring.md  - Confidence calculation system
@@ -132,12 +132,22 @@ src/instructions/          - Elliott Wave instruction modules (Phase 1)
 │   ├── trending-weak.md       - Weak trend guidance (ADX 15-24)
 │   ├── ranging.md             - Range-bound guidance (ADX <15)
 │   └── volatile.md            - High volatility guidance (ATR >2x)
+├── wave-patterns/ (Phase 3 - NEW)
+│   ├── wave-2-entry.md        - Wave 2 entry rules (~1.4K tokens)
+│   ├── wave-4-entry.md        - Wave 4 entry rules (~1.8K tokens)
+│   ├── wave-5-exit.md         - Wave 5 exit/scaling rules (~1.9K tokens)
+│   └── complex-corrections.md - Complex correction handling (~1.9K tokens)
+├── indicators/ (Phase 3 - NEW)
+│   └── confluence.md          - Indicator confluence framework (~1.3K tokens)
+└── context/ (Phase 3 - NEW)
+    └── performance-template.md - Performance tracking template (~0.4K tokens)
 
-Purpose: Modular instruction library for InstructionBuilder
-- Decouples signal rules from main system
-- Enables runtime instruction composition
-- Phase 1: Module structure + documentation
-- Phase 2: InstructionBuilder integration
+Phase 1: Module structure + documentation
+Phase 2: InstructionBuilder integration planning
+Phase 3: Content extraction - Added 6 new modules
+- Token reduction: 65.3% from monolithic v4 (8.2K → 2.8K avg)
+- Modular design enables regime-aware instruction assembly
+- InstructionBuilder coordinates module selection at runtime
 ```
 
 ### Layer 7: Trade Execution & Management
