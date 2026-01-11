@@ -121,34 +121,54 @@ Configuration (Phase 9 additions):
 - `key_level_proximity_atr_multiplier` (default: 1.5)
 
 ### Layer 6.5: Modular Instruction System (Phase 1-3)
-```
-src/instructions/          - Elliott Wave instruction modules
-├── core/
-│   ├── essential-rules.md     - Elliott Wave inviolable rules
-│   ├── confidence-scoring.md  - Confidence calculation system
-│   └── output-format.md       - JSON output specification
-├── regime/
-│   ├── trending-strong.md     - Strong trend guidance (ADX ≥25)
-│   ├── trending-weak.md       - Weak trend guidance (ADX 15-24)
-│   ├── ranging.md             - Range-bound guidance (ADX <15)
-│   └── volatile.md            - High volatility guidance (ATR >2x)
-├── wave-patterns/ (Phase 3 - NEW)
-│   ├── wave-2-entry.md        - Wave 2 entry rules (~1.4K tokens)
-│   ├── wave-4-entry.md        - Wave 4 entry rules (~1.8K tokens)
-│   ├── wave-5-exit.md         - Wave 5 exit/scaling rules (~1.9K tokens)
-│   └── complex-corrections.md - Complex correction handling (~1.9K tokens)
-├── indicators/ (Phase 3 - NEW)
-│   └── confluence.md          - Indicator confluence framework (~1.3K tokens)
-└── context/ (Phase 3 - NEW)
-    └── performance-template.md - Performance tracking template (~0.4K tokens)
 
-Phase 1: Module structure + documentation
-Phase 2: InstructionBuilder integration planning
-Phase 3: Content extraction - Added 6 new modules
-- Token reduction: 65.3% from monolithic v4 (8.2K → 2.8K avg)
-- Modular design enables regime-aware instruction assembly
-- InstructionBuilder coordinates module selection at runtime
+**instruction_builder.py** - Dynamic instruction assembly engine
 ```
+Core Features:
+- Assemble instructions at runtime based on market conditions
+- Token reduction: 34K → 10-12K tokens (65-70% efficiency)
+- Regime-aware module selection (ADX + volatility)
+- Performance context injection from recent trades
+- Token budgeting & validation (default: 15K limit)
+- LRU caching for module loading
+
+Key Methods:
+- build(market_regime, signal_context, volatility_state) → ~12-15K token instruction set
+- _select_regime_module() → Pick ONE regime based on ADX/volatility
+- _select_wave_modules() → Select 2-3 wave patterns per context
+- _build_performance_context() → Inject historical performance data
+- estimate_tokens() → Calculate token count via char approximation
+
+Integration: claude_client.py calls InstructionBuilder.build() before analysis
+```
+
+**Module Structure** (src/instructions/):
+```
+├── core/                    (Always included)
+│   ├── essential-rules.md
+│   ├── confidence-scoring.md
+│   └── output-format.md
+├── regime/                  (One selected per build)
+│   ├── trending-strong.md   (ADX ≥25)
+│   ├── trending-weak.md     (ADX 15-24)
+│   ├── ranging.md           (ADX <15)
+│   └── volatile.md          (ATR >80th percentile)
+├── wave-patterns/           (2-3 selected per context)
+│   ├── wave-2-entry.md      (~1.4K tokens)
+│   ├── wave-4-entry.md      (~1.8K tokens)
+│   ├── wave-5-exit.md       (~1.9K tokens)
+│   └── complex-corrections.md (~1.9K tokens)
+├── indicators/              (Included if exists)
+│   └── confluence.md        (~1.3K tokens)
+└── context/                 (Dynamic injection)
+    └── performance-template.md (~0.4K tokens)
+```
+
+**Phase Progress**:
+- Phase 1 ✅ - Module structure
+- Phase 2 ✅ - InstructionBuilder class (src/instruction_builder.py)
+- Phase 3 ✅ - Content extraction (6 modules, 65% token reduction)
+- Phase 4 (in progress) - Claude client integration
 
 ### Layer 7: Trade Execution & Management
 ```
@@ -259,6 +279,7 @@ Repeat trail logic
 | mt5_client.py | Platform integration | test_mt5.py |
 | signal_parser.py | Signal models | test_signal_parser.py |
 | claude_client.py | AI integration | test_claude_client.py |
+| instruction_builder.py | Dynamic instruction assembly | test_instruction_builder.py |
 | database.py | Trade persistence | test_database.py (16 tests) |
 | risk_guard.py | Risk validation (Phase 9) | test_risk_guard.py (16+ tests) |
 | trade_executor.py | Execution workflow | test_trade_executor.py (13 tests) |

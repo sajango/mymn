@@ -698,10 +698,31 @@ class MT5Client:
 ### Architecture Overview
 
 Elliott Wave instructions have been refactored into a modular system to enable:
-- Runtime composition of AI instructions
+- Runtime composition of AI instructions based on market conditions
 - Decoupled signal rules from core trading logic
-- Reusable instruction library for InstructionBuilder
-- Token-optimized module delivery (65.3% reduction)
+- Reusable instruction library dynamically assembled at runtime
+- Token optimization: 34K → 10-12K tokens (~65-70% reduction)
+
+### InstructionBuilder Module
+
+**File**: `src/instruction_builder.py`
+
+Dynamic instruction assembly engine that:
+- Loads modular instructions from `src/instructions/`
+- Selects regime-specific modules based on ADX, market conditions
+- Includes context-dependent wave pattern modules
+- Injects performance metrics from recent trades
+- Estimates token usage with char/4 approximation
+- Validates assembled instruction set stays within token budget (default: 15K)
+
+**Key Methods**:
+- `build(market_regime, signal_context, volatility_state)` - Assemble full instruction set (~12-15K tokens)
+- `_select_regime_module()` - Choose regime module based on ADX + volatility
+- `_select_wave_modules()` - Select wave patterns based on looking_for context
+- `_build_performance_context()` - Inject historical performance data
+- `estimate_tokens()` - Calculate token count (char-based approximation)
+
+**Integration Point**: `src/claude_client.py` calls `InstructionBuilder.build()` before Claude analysis to get dynamically assembled, context-aware instructions.
 
 ### Directory Structure
 
@@ -716,61 +737,82 @@ src/instructions/
 │   ├── trending-weak.md         ADX 15-24 (weak trend direction)
 │   ├── ranging.md               ADX <15 (consolidation/range)
 │   └── volatile.md              ATR >2x normal (high volatility)
-├── wave-patterns/ (Phase 3 - NEW)
+├── wave-patterns/
 │   ├── wave-2-entry.md          Wave 2 entry rules (~1.4K tokens)
 │   ├── wave-4-entry.md          Wave 4 entry rules (~1.8K tokens)
 │   ├── wave-5-exit.md           Wave 5 exit/scaling (~1.9K tokens)
 │   └── complex-corrections.md   Complex correction handling (~1.9K tokens)
-├── indicators/ (Phase 3 - NEW)
+├── indicators/
 │   └── confluence.md            Indicator confluence framework (~1.3K tokens)
-└── context/ (Phase 3 - NEW)
+└── context/
     └── performance-template.md  Performance tracking template (~0.4K tokens)
 ```
 
-### Module Purposes
+### Module Categories
 
-**Core Modules** (Essential):
+**Core Modules** (Essential - always included):
 - `essential-rules.md` - Inviolable Elliott Wave rules
 - `confidence-scoring.md` - How confidence is calculated per signal
 - `output-format.md` - Expected JSON structure from Claude AI
 
-**Regime Modules** (Context-Specific):
-- `trending-strong.md` - Wave pattern guidance in strong trends
-- `trending-weak.md` - Wave pattern guidance in weak trends
-- `ranging.md` - Wave pattern guidance in range-bound markets
-- `volatile.md` - Risk management in high volatility
+**Regime Modules** (One selected based on market conditions):
+- `trending-strong.md` - ADX ≥25, strong trend guidance
+- `trending-weak.md` - ADX 15-24, weak trend guidance
+- `ranging.md` - ADX <15, range-bound guidance
+- `volatile.md` - High volatility (ATR >80th percentile)
 
-**Wave Pattern Modules** (Phase 3 - Content Extraction):
+**Wave Pattern Modules** (Selected based on signal_context.looking_for):
 - `wave-2-entry.md` - Wave 2 entry validation & SL placement
 - `wave-4-entry.md` - Wave 4 entry confirmation & risk levels
 - `wave-5-exit.md` - Wave 5 exit criteria & partial taking profit
 - `complex-corrections.md` - Complex correction (W, X, Y, Z) handling
 
-**Technical Modules** (Phase 3 - Content Extraction):
+**Technical Modules** (Dynamic performance injection):
 - `confluence.md` - Multi-indicator confirmation framework
-- `performance-template.md` - Performance metric tracking structure
+- `performance-template.md` - Performance metrics with placeholders
+
+### Assembly Logic
+
+InstructionBuilder.build() follows this sequence:
+
+1. **Core** → Load essential-rules.md + confidence-scoring.md
+2. **Regime Selection** → Pick ONE regime module:
+   - Check volatility first (ATR >80th %ile → volatile.md)
+   - Check regime_type field (ranging/strong/weak)
+   - Fall back to ADX: ≥25 (strong), 15-24 (weak), <15 (ranging)
+3. **Wave Patterns** → Select based on looking_for context:
+   - "entry" → wave-2-entry.md + wave-4-entry.md
+   - "exit" → wave-5-exit.md
+   - Add complex-corrections.md if wave_ambiguity >30
+4. **Indicators** → Include confluence.md if exists
+5. **Performance** → Inject signal_context data into performance template
+6. **Output Format** → Append output-format.md (always last)
+
+### Token Reduction Results
+
+- **Baseline (monolithic)**: 34K tokens (full instruction_v4.md)
+- **Assembled (typical)**: 10-12K tokens (~65-70% reduction)
+  - Core modules: ~3K
+  - Regime module: ~2.5K
+  - Wave patterns (2-3 modules): ~4-6K
+  - Indicators + context: ~2K
+  - Overhead: ~0.5K
 
 ### Phase Progress
 
 - **Phase 1** ✅ - Module structure & documentation (COMPLETE)
-  - Directory structure created
-  - Core & regime modules documented
-
-- **Phase 2** ✅ - InstructionBuilder prototype (COMPLETE)
-  - Instruction loader framework designed
-  - Runtime composition capability proven
-
+- **Phase 2** ✅ - InstructionBuilder implementation (COMPLETE)
+  - Class design with LRU caching
+  - Regime-aware module selection
+  - Token estimation & validation
 - **Phase 3** ✅ - Content Extraction (COMPLETE)
-  - Wave pattern modules extracted from monolithic v4
-  - Indicator confluence framework created
-  - Performance template added
-  - Token reduction: 65.3% (8.2K → 2.8K average module size)
-  - 6 new modules covering critical trading scenarios
-
-- **Phase 4** (pending) - Full InstructionBuilder integration
-  - Claude client uses modular instructions
-  - Regime-aware instruction selection
-  - Runtime module composition based on market conditions
+  - Wave pattern modules extracted
+  - Indicator confluence framework
+  - Performance template with placeholders
+- **Phase 4** (in progress) - Claude client integration
+  - `src/claude_client.py` to use InstructionBuilder
+  - Signal context prep for module selection
+  - Performance metrics injection
 
 ---
 

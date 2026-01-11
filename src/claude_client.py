@@ -162,9 +162,9 @@ class ClaudeClient:
         # Resolve to absolute path
         abs_path = path.resolve()
 
-        # Check for path traversal attempts
+        # Check for path traversal attempts and command injection
         path_str = str(path)
-        if ".." in path_str or path_str.startswith("/") or ";" in path_str:
+        if ".." in path_str or ";" in path_str:
             raise ValueError(f"Invalid path: {path}")
 
         # Only allow files with safe extensions

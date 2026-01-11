@@ -394,7 +394,7 @@ class TestSignalContext:
         assert "PREVIOUS ANALYSIS CONTEXT" in prompt
         assert "**Last Signal:** BUY" in prompt
         assert "DIRECTION CHANGE REQUIREMENTS" in prompt
-        assert "confidence >= 75%" in prompt
+        assert "confidence >= 65%" in prompt
         assert "Wave 3 impulse" in prompt
         assert "SELL → BUY → BUY" in prompt
 

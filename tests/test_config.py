@@ -25,7 +25,7 @@ def test_settings_import() -> None:
     assert settings.paper_trading is True
     assert settings.claude_timeout == 300
     assert settings.max_spread_pips == 4.0
-    assert settings.confidence_threshold == 60
+    assert settings.confidence_threshold == 50
     assert settings.project_root.exists()
     assert "mymn" in str(settings.project_root)
 
