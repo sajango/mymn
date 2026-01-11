@@ -1503,6 +1503,173 @@ class Database:
             )
             conn.commit()
 
+    # Performance extraction methods for InstructionBuilder
+
+    def get_wave_performance_stats(self, days: int = 30) -> dict:
+        """Get win rates by wave position for instruction context.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            Dict mapping wave position to performance stats
+            e.g., {"Wave 2": {"win_rate": 62, "total": 15}, ...}
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    s.wave_position,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN t.profit > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(t.profit) as avg_profit
+                FROM trades t
+                JOIN signals s ON t.signal_id = s.id
+                WHERE t.status = 'closed'
+                    AND s.wave_position IS NOT NULL
+                    AND t.close_time >= datetime('now', ? || ' days')
+                GROUP BY s.wave_position
+                ORDER BY total DESC
+                """,
+                (f"-{days}",),
+            ).fetchall()
+
+            result = {}
+            for row in rows:
+                wave_pos = row["wave_position"]
+                total = row["total"]
+                wins = row["wins"] or 0
+                result[wave_pos] = {
+                    "win_rate": round((wins / total * 100), 1) if total > 0 else 0,
+                    "total": total,
+                    "avg_profit": round(row["avg_profit"] or 0, 2),
+                }
+
+            return result
+
+    def get_confidence_performance_stats(self, days: int = 30) -> dict:
+        """Get win rates by confidence bucket for instruction context.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            Dict mapping confidence bucket to performance stats
+            e.g., {"80+": {"win_rate": 55, "total": 10}, ...}
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    CASE
+                        WHEN s.confidence >= 80 THEN '80+'
+                        WHEN s.confidence >= 70 THEN '70+'
+                        WHEN s.confidence >= 60 THEN '60+'
+                        WHEN s.confidence >= 50 THEN '50+'
+                        ELSE '<50'
+                    END as bucket,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN t.profit > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(t.profit) as avg_profit
+                FROM trades t
+                JOIN signals s ON t.signal_id = s.id
+                WHERE t.status = 'closed'
+                    AND t.close_time >= datetime('now', ? || ' days')
+                GROUP BY bucket
+                ORDER BY bucket DESC
+                """,
+                (f"-{days}",),
+            ).fetchall()
+
+            result = {}
+            for row in rows:
+                bucket = row["bucket"]
+                total = row["total"]
+                wins = row["wins"] or 0
+                result[bucket] = {
+                    "win_rate": round((wins / total * 100), 1) if total > 0 else 0,
+                    "total": total,
+                    "avg_profit": round(row["avg_profit"] or 0, 2),
+                }
+
+            return result
+
+    def get_instruction_performance_context(self, days: int = 30) -> dict:
+        """Get comprehensive performance context for InstructionBuilder.
+
+        Aggregates wave performance, confidence buckets, session performance,
+        and streak info into a single context object.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            Dict with all performance metrics for instruction assembly
+        """
+        wave_stats = self.get_wave_performance_stats(days)
+        conf_stats = self.get_confidence_performance_stats(days)
+        session_stats = self._get_session_performance_stats()
+        streak_info = self._get_current_streak()
+        trade_summary = self.get_trade_summary()
+
+        # Calculate overall win rate
+        total = trade_summary.get("total_trades", 0)
+        wins = trade_summary.get("wins", 0)
+        overall_win_rate = round((wins / total * 100), 1) if total > 0 else None
+
+        # Find best/worst wave positions
+        best_wave = None
+        worst_wave = None
+        best_wave_rate = 0
+        worst_wave_rate = 100
+
+        for wave, stats in wave_stats.items():
+            if stats["total"] >= 5:  # Require minimum sample
+                if stats["win_rate"] > best_wave_rate:
+                    best_wave_rate = stats["win_rate"]
+                    best_wave = wave
+                if stats["win_rate"] < worst_wave_rate:
+                    worst_wave_rate = stats["win_rate"]
+                    worst_wave = wave
+
+        # Find best/worst sessions
+        best_session = None
+        worst_session = None
+        best_session_rate = 0
+        worst_session_rate = 100
+
+        for session, stats in session_stats.items():
+            if stats["total"] >= 5:
+                if stats["win_rate"] > best_session_rate:
+                    best_session_rate = stats["win_rate"]
+                    best_session = session
+                if stats["win_rate"] < worst_session_rate:
+                    worst_session_rate = stats["win_rate"]
+                    worst_session = session
+
+        # Calculate calibrated minimum confidence
+        calibrated_min = 60  # Default
+        for bucket in ["80+", "70+", "60+", "50+"]:
+            if bucket in conf_stats and conf_stats[bucket]["total"] >= 5:
+                if conf_stats[bucket]["win_rate"] >= 50:
+                    # Extract numeric threshold
+                    calibrated_min = int(bucket.rstrip("+"))
+                    break
+
+        return {
+            "overall_win_rate": overall_win_rate,
+            "wave_performance": wave_stats,
+            "confidence_performance": conf_stats,
+            "session_performance": session_stats,
+            "current_streak": streak_info,
+            "best_wave_position": best_wave,
+            "worst_wave_position": worst_wave,
+            "best_session": best_session,
+            "worst_session": worst_session,
+            "calibrated_min_confidence": calibrated_min,
+            "looking_for": "entry",  # Default, can be overridden
+        }
+
 
 # Lazy singleton
 _database: Optional[Database] = None

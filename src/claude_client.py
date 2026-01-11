@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.config import get_settings
+from src.instruction_builder import get_instruction_builder
 from src.signal_parser import (
     TradingSignal,
     create_no_trade_signal,
@@ -121,19 +122,22 @@ class ClaudeClient:
         instructions_path: Optional[Path] = None,
         timeout: Optional[int] = None,
         max_retries: int = 1,
+        use_dynamic_instructions: bool = True,
     ):
         """Initialize Claude client.
 
         Args:
-            instructions_path: Path to instructions markdown file
+            instructions_path: Path to instructions markdown file (fallback)
             timeout: CLI timeout in seconds (default from config)
             max_retries: Max retry attempts on failure
+            use_dynamic_instructions: Use InstructionBuilder for modular assembly
         """
         self._config = None
         self._instructions_path = instructions_path
         self._timeout = timeout
         self.max_retries = max_retries
         self._db = None
+        self.use_dynamic_instructions = use_dynamic_instructions
 
     def set_database(self, db) -> None:
         """Set database reference for signal context retrieval.
@@ -536,6 +540,47 @@ class ClaudeClient:
             logger.error(f"[CLI] Timeout after {elapsed:.1f}s (limit={self.timeout}s)")
             raise ClaudeTimeoutError(f"CLI timed out after {self.timeout}s")
 
+    def _get_system_prompt(
+        self,
+        market_regime: Optional[dict] = None,
+        signal_context: Optional[dict] = None,
+        volatility_state: Optional[dict] = None,
+    ) -> str:
+        """Get system prompt - dynamic or static based on configuration.
+
+        Args:
+            market_regime: Current market regime info
+            signal_context: Recent signal context with performance data
+            volatility_state: Current volatility state
+
+        Returns:
+            System prompt content string
+        """
+        # Try dynamic instruction assembly first
+        if self.use_dynamic_instructions:
+            try:
+                builder = get_instruction_builder()
+                instructions = builder.build(
+                    market_regime=market_regime,
+                    signal_context=signal_context,
+                    volatility_state=volatility_state,
+                )
+                if instructions:
+                    logger.info("[INSTRUCTIONS] Using dynamic instruction assembly")
+                    return instructions
+            except Exception as e:
+                logger.warning(f"[INSTRUCTIONS] Dynamic assembly failed, falling back to static: {e}")
+
+        # Fallback to static instruction file
+        if self.instructions_path.exists():
+            validated_instructions = self._validate_path(self.instructions_path)
+            with open(validated_instructions, "r", encoding="utf-8") as f:
+                content = f.read()
+            logger.info(f"[INSTRUCTIONS] Using static file: {self.instructions_path}")
+            return content
+
+        raise FileNotFoundError("No instructions available (dynamic or static)")
+
     def _retry_with_backoff(
         self,
         csv_files: dict[str, Path],
@@ -556,18 +601,19 @@ class ClaudeClient:
         Returns:
             CLI output or None if all retries fail
         """
-        prompt = self._build_prompt(csv_files, signal_context=signal_context, 
+        prompt = self._build_prompt(csv_files, signal_context=signal_context,
                                    market_regime=market_regime, volatility_state=volatility_state)
         settings_file = None
 
         try:
-            # Create settings file with system prompt (avoids Windows cmd line limit)
-            if self.instructions_path.exists():
-                validated_instructions = self._validate_path(self.instructions_path)
-                with open(validated_instructions, "r", encoding="utf-8") as f:
-                    system_prompt_content = f.read()
-                settings_file = self._create_settings_file(system_prompt_content)
-                logger.debug(f"[CLI] Created settings file: {settings_file}")
+            # Get system prompt (dynamic or static)
+            system_prompt_content = self._get_system_prompt(
+                market_regime=market_regime,
+                signal_context=signal_context,
+                volatility_state=volatility_state,
+            )
+            settings_file = self._create_settings_file(system_prompt_content)
+            logger.debug(f"[CLI] Created settings file: {settings_file}")
 
             cmd = self._build_command(csv_files, settings_file)
             return self._run_cli(cmd, prompt)
@@ -652,6 +698,7 @@ class ClaudeClient:
         signal_context = None
         if self._db:
             try:
+                # Get enhanced signal context for prompt building
                 signal_context = self._db.get_enhanced_signal_context(limit=5)
                 if signal_context:
                     logger.info(
@@ -659,15 +706,33 @@ class ClaudeClient:
                         f"seq={signal_context['recent_sequence']}, "
                         f"mins_ago={signal_context['minutes_since_last']}"
                     )
-                    
+
                     # Log additional context
                     if signal_context.get('current_streak'):
                         streak = signal_context['current_streak']
                         logger.info(f"[ANALYSIS] Current streak: {streak['count']} {streak['type']}")
-                    
+
                     if signal_context.get('session_performance'):
                         logger.info(f"[ANALYSIS] Session performance: {signal_context['session_performance']}")
-                else:
+
+                # Get performance context for InstructionBuilder
+                if self.use_dynamic_instructions:
+                    try:
+                        perf_context = self._db.get_instruction_performance_context(days=30)
+                        if perf_context:
+                            # Merge performance context into signal context
+                            if signal_context is None:
+                                signal_context = perf_context
+                            else:
+                                signal_context.update(perf_context)
+                            logger.info(
+                                f"[ANALYSIS] Performance context: win_rate={perf_context.get('overall_win_rate')}%, "
+                                f"best_wave={perf_context.get('best_wave_position')}"
+                            )
+                    except Exception as perf_err:
+                        logger.warning(f"[ANALYSIS] Failed to get performance context: {perf_err}")
+
+                if signal_context is None:
                     logger.debug("[ANALYSIS] No previous signals for context")
             except Exception as ctx_err:
                 logger.warning(f"[ANALYSIS] Failed to get enhanced context: {ctx_err}")
