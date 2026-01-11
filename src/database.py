@@ -7,6 +7,7 @@ Tracks:
 - Trade history and performance metrics
 """
 
+import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -71,6 +72,23 @@ class Database:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _add_column_if_not_exists(
+        self, conn: sqlite3.Connection, table: str, column: str, col_type: str
+    ) -> None:
+        """Add column to table if it doesn't exist.
+
+        Args:
+            conn: Database connection
+            table: Table name
+            column: Column name to add
+            col_type: SQLite column type (TEXT, INTEGER, REAL, etc.)
+        """
+        cursor = conn.execute(f"PRAGMA table_info({table})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            logger.info(f"Added column {column} to {table} table")
+
     def _init_db(self):
         """Initialize database tables."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +112,17 @@ class Database:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # Phase B: Add calibration columns to signals table
+            self._add_column_if_not_exists(
+                conn, "signals", "confidence_breakdown", "TEXT"
+            )
+            self._add_column_if_not_exists(
+                conn, "signals", "regime_type", "TEXT"
+            )
+            self._add_column_if_not_exists(
+                conn, "signals", "session", "TEXT"
+            )
 
             # Trades table with trailing stop state
             conn.execute("""
@@ -120,6 +149,17 @@ class Database:
                     FOREIGN KEY (signal_id) REFERENCES signals (id)
                 )
             """)
+
+            # Phase B: Add calibration columns to trades table
+            self._add_column_if_not_exists(
+                conn, "trades", "outcome", "TEXT"
+            )
+            self._add_column_if_not_exists(
+                conn, "trades", "r_multiple", "REAL"
+            )
+            self._add_column_if_not_exists(
+                conn, "trades", "signal_confidence", "INTEGER"
+            )
 
             # TP levels table
             conn.execute("""
@@ -287,11 +327,16 @@ class Database:
             conn.commit()
             logger.info(f"Database initialized: {self.db_path}")
 
-    def save_signal(self, signal: TradingSignal) -> int:
-        """Save signal to database.
+    def save_signal(
+        self,
+        signal: TradingSignal,
+        session: Optional[str] = None,
+    ) -> int:
+        """Save signal to database with calibration data.
 
         Args:
             signal: Trading signal to save
+            session: Trading session name (asian, london, ny, overlap)
 
         Returns:
             Signal ID
@@ -302,14 +347,24 @@ class Database:
             signal.wave_analysis.wave_position if signal.wave_analysis else None
         )
 
+        # Phase B: Extract calibration data
+        confidence_breakdown = None
+        if signal.confidence_breakdown:
+            confidence_breakdown = json.dumps(signal.confidence_breakdown.model_dump())
+
+        regime_type = None
+        if signal.market_regime:
+            regime_type = signal.market_regime.classification
+
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO signals (
                     timestamp, symbol, action, entry_price, stop_loss,
                     take_profit_1, take_profit_2, take_profit_3,
-                    confidence, wave_position, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    confidence, wave_position, status,
+                    confidence_breakdown, regime_type, session
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     signal.timestamp,
@@ -323,11 +378,17 @@ class Database:
                     s.confidence,
                     wave_pos,
                     SignalStatus.PENDING.value,
+                    confidence_breakdown,
+                    regime_type,
+                    session,
                 ),
             )
             signal_id = cursor.lastrowid
             conn.commit()
-            logger.info(f"Signal saved: id={signal_id}, action={s.action.value}")
+            logger.info(
+                f"Signal saved: id={signal_id}, action={s.action.value}, "
+                f"confidence={s.confidence}, regime={regime_type}, session={session}"
+            )
             return signal_id
 
     def save_trade(
@@ -601,7 +662,7 @@ class Database:
         close_price: float,
         profit: float,
     ):
-        """Close trade with final P&L.
+        """Close trade with final P&L and calibration metrics.
 
         Args:
             trade_id: Trade ID
@@ -609,13 +670,55 @@ class Database:
             profit: Final profit/loss
         """
         with self._get_connection() as conn:
+            # Get trade details for R-multiple calculation
+            trade = conn.execute(
+                "SELECT entry_price, initial_stop_loss, action, signal_id FROM trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+
+            # Phase B: Calculate outcome and R-multiple
+            outcome = "breakeven"
+            r_multiple = 0.0
+            signal_confidence = None
+
+            if trade:
+                if profit > 0:
+                    outcome = "win"
+                elif profit < 0:
+                    outcome = "loss"
+
+                # Calculate R-multiple: profit / risk
+                entry = trade["entry_price"]
+                sl = trade["initial_stop_loss"]
+                action = trade["action"]
+
+                if entry and sl:
+                    risk_per_unit = abs(entry - sl)
+                    if risk_per_unit > 0:
+                        actual_move = close_price - entry
+                        if action == "SELL":
+                            actual_move = -actual_move
+                        r_multiple = round(actual_move / risk_per_unit, 2)
+
+                # Get signal confidence
+                if trade["signal_id"]:
+                    sig = conn.execute(
+                        "SELECT confidence FROM signals WHERE id = ?",
+                        (trade["signal_id"],),
+                    ).fetchone()
+                    if sig:
+                        signal_confidence = sig["confidence"]
+
             conn.execute(
                 """
                 UPDATE trades SET
                     close_time = ?,
                     close_price = ?,
                     profit = ?,
-                    status = ?
+                    status = ?,
+                    outcome = ?,
+                    r_multiple = ?,
+                    signal_confidence = ?
                 WHERE id = ?
                 """,
                 (
@@ -623,6 +726,9 @@ class Database:
                     close_price,
                     profit,
                     TradeStatus.CLOSED.value,
+                    outcome,
+                    r_multiple,
+                    signal_confidence,
                     trade_id,
                 ),
             )
@@ -632,11 +738,13 @@ class Database:
                 INSERT INTO trade_events (trade_id, event_type, event_data)
                 VALUES (?, ?, ?)
                 """,
-                (trade_id, "CLOSED", f"profit={profit}"),
+                (trade_id, "CLOSED", f"profit={profit}, outcome={outcome}, r={r_multiple}"),
             )
 
             conn.commit()
-            logger.info(f"Trade {trade_id} closed: profit={profit}")
+            logger.info(
+                f"Trade {trade_id} closed: profit={profit}, outcome={outcome}, R={r_multiple}"
+            )
 
     def get_trade_events(self, trade_id: int) -> list[dict]:
         """Get trade events audit trail.

@@ -3,11 +3,13 @@
 Assembles modular instruction sets based on market conditions, reducing token usage
 from ~34K (monolithic) to ~12-15K (assembled). Supports regime-aware module selection
 and performance context injection.
+
+Phase B Enhancement: CalibrationAnalyzer integration for data-driven performance context.
 """
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,7 @@ class InstructionBuilder:
         market_regime: Optional[dict] = None,
         signal_context: Optional[dict] = None,
         volatility_state: Optional[dict] = None,
+        use_calibration: bool = True,
     ) -> str:
         """Build complete instruction set.
 
@@ -67,6 +70,7 @@ class InstructionBuilder:
             market_regime: Current market regime info (adx, regime_type)
             signal_context: Recent signal context (looking_for, wave_ambiguity, performance)
             volatility_state: Current volatility state (atr_percentile)
+            use_calibration: If True, fetch performance context from CalibrationAnalyzer
 
         Returns:
             Assembled instruction string (~12-15K tokens)
@@ -91,8 +95,11 @@ class InstructionBuilder:
         if confluence:
             parts.append(confluence)
 
-        # 5. Performance context (dynamic injection)
-        perf_context = self._build_performance_context(signal_context)
+        # 5. Performance context (dynamic injection with calibration)
+        effective_context = self._get_effective_signal_context(
+            signal_context, use_calibration
+        )
+        perf_context = self._build_performance_context(effective_context)
         if perf_context:
             parts.append(perf_context)
 
@@ -206,6 +213,50 @@ class InstructionBuilder:
 
         return modules
 
+    def _get_effective_signal_context(
+        self, signal_context: Optional[Dict[str, Any]], use_calibration: bool
+    ) -> Optional[Dict[str, Any]]:
+        """Get effective signal context, optionally merging with calibration data.
+
+        Phase B: Integrates CalibrationAnalyzer to provide data-driven performance context.
+
+        Args:
+            signal_context: User-provided signal context (may override calibration)
+            use_calibration: If True, fetch data from CalibrationAnalyzer
+
+        Returns:
+            Merged signal context dict or None
+        """
+        if not use_calibration:
+            return signal_context
+
+        try:
+            from src.calibration_analyzer import get_calibration_analyzer
+
+            analyzer = get_calibration_analyzer()
+            calibration_context = analyzer.get_performance_context_for_instructions()
+
+            if not signal_context:
+                logger.info("[INSTRUCTIONS] Using calibration data for performance context")
+                return calibration_context
+
+            # Merge: user-provided values override calibration defaults
+            merged = calibration_context.copy()
+            for key, value in signal_context.items():
+                if value is not None:
+                    merged[key] = value
+
+            logger.info(
+                "[INSTRUCTIONS] Merged signal_context with calibration data | "
+                f"win_rate={merged.get('overall_win_rate')}% | "
+                f"threshold={merged.get('calibrated_min_confidence')}%"
+            )
+            return merged
+
+        except Exception as e:
+            logger.warning(f"[INSTRUCTIONS] CalibrationAnalyzer failed: {e}")
+            return signal_context
+
     def _build_performance_context(self, signal_context: Optional[dict]) -> str:
         """Build performance context with historical data.
 
@@ -222,18 +273,22 @@ class InstructionBuilder:
         if not template:
             return ""
 
-        # Replace placeholders with actual data
+        # Replace placeholders with actual data (ensure all values are strings)
+        def safe_str(val, default="N/A"):
+            """Convert value to string, using default if None."""
+            return str(val) if val is not None else default
+
         replacements = {
-            "{{WIN_RATE}}": str(signal_context.get("overall_win_rate", "N/A")),
+            "{{WIN_RATE}}": safe_str(signal_context.get("overall_win_rate")),
             "{{WIN_RATE_COMMENT}}": self._win_rate_comment(
                 signal_context.get("overall_win_rate")
             ),
-            "{{BEST_WAVE}}": signal_context.get("best_wave_position", "N/A"),
-            "{{WORST_WAVE}}": signal_context.get("worst_wave_position", "N/A"),
-            "{{BEST_SESSION}}": signal_context.get("best_session", "N/A"),
-            "{{WORST_SESSION}}": signal_context.get("worst_session", "N/A"),
-            "{{CALIBRATED_MIN}}": str(
-                signal_context.get("calibrated_min_confidence", 60)
+            "{{BEST_WAVE}}": safe_str(signal_context.get("best_wave_position")),
+            "{{WORST_WAVE}}": safe_str(signal_context.get("worst_wave_position")),
+            "{{BEST_SESSION}}": safe_str(signal_context.get("best_session")),
+            "{{WORST_SESSION}}": safe_str(signal_context.get("worst_session")),
+            "{{CALIBRATED_MIN}}": safe_str(
+                signal_context.get("calibrated_min_confidence"), "60"
             ),
             "{{STREAK_WARNING}}": self._streak_warning(signal_context),
         }
