@@ -452,3 +452,128 @@ class TestSingleton:
         cache_info = builder2._load_module.cache_info()
 
         assert cache_info.hits >= 0, "Cache should be preserved across singleton calls"
+
+
+class TestFeedbackLoopIntegration:
+    """Tests for feedback loop integration (Phase 5)."""
+
+    def test_performance_context_flows_to_builder(self):
+        """Test performance context from database flows to InstructionBuilder."""
+        builder = InstructionBuilder()
+        builder.clear_cache()
+
+        # Simulate performance context from database
+        perf_context = {
+            "overall_win_rate": 52.5,
+            "best_wave_position": "Wave 2",
+            "worst_wave_position": "Wave 5",
+            "best_session": "London",
+            "worst_session": "Asian",
+            "calibrated_min_confidence": 65,
+            "confidence_performance": {
+                "80+": {"win_rate": 68, "total": 15},
+                "70+": {"win_rate": 55, "total": 25},
+                "60+": {"win_rate": 48, "total": 40},
+                "50+": {"win_rate": 42, "total": 60},
+            },
+            "current_streak": {"type": "win", "count": 3},
+            "looking_for": "entry",
+        }
+
+        # Build with performance context
+        result = builder.build(
+            market_regime={"adx": 30, "regime_type": "trending_strong"},
+            signal_context=perf_context,
+            volatility_state={"atr_percentile": 50}
+        )
+
+        # Verify performance data is injected
+        assert "52.5" in result, "Win rate should be in assembled instructions"
+        assert "Wave 2" in result, "Best wave should be in assembled instructions"
+        assert "London" in result, "Best session should be in assembled instructions"
+
+    def test_calibrated_confidence_threshold_injection(self):
+        """Test calibrated confidence threshold appears in output."""
+        builder = InstructionBuilder()
+        builder.clear_cache()
+
+        signal_context = {
+            "overall_win_rate": 55,
+            "calibrated_min_confidence": 70,
+            "looking_for": "entry",
+        }
+
+        result = builder.build(
+            market_regime={"adx": 25},
+            signal_context=signal_context
+        )
+
+        assert "70" in result, "Calibrated confidence should be in instructions"
+
+    def test_losing_streak_warning_injection(self):
+        """Test losing streak triggers warning in instructions."""
+        builder = InstructionBuilder()
+        builder.clear_cache()
+
+        signal_context = {
+            "overall_win_rate": 45,
+            "current_streak": {"type": "loss", "count": 4},
+            "looking_for": "entry",
+        }
+
+        result = builder.build(
+            market_regime={"adx": 25},
+            signal_context=signal_context
+        )
+
+        assert "WARNING" in result or "⚠️" in result, "Losing streak warning should appear"
+        assert "4" in result, "Streak count should be mentioned"
+
+    def test_full_feedback_loop_assembly(self):
+        """Test complete feedback loop with all performance data."""
+        builder = InstructionBuilder()
+        builder.clear_cache()
+
+        # Complete performance context simulating database output
+        full_context = {
+            "overall_win_rate": 48.5,
+            "wave_performance": {
+                "Wave 2": {"win_rate": 55, "total": 20},
+                "Wave 4": {"win_rate": 45, "total": 15},
+            },
+            "confidence_performance": {
+                "80+": {"win_rate": 70, "total": 10},
+                "70+": {"win_rate": 52, "total": 20},
+                "60+": {"win_rate": 45, "total": 35},
+            },
+            "session_performance": {
+                "London": {"win_rate": 55, "total": 25},
+                "NY": {"win_rate": 50, "total": 30},
+                "Asian": {"win_rate": 40, "total": 15},
+            },
+            "current_streak": {"type": "loss", "count": 2},
+            "best_wave_position": "Wave 2",
+            "worst_wave_position": "Wave 4",
+            "best_session": "London",
+            "worst_session": "Asian",
+            "calibrated_min_confidence": 70,
+            "looking_for": "entry",
+            "wave_ambiguity": 35,  # Triggers complex corrections
+        }
+
+        result = builder.build(
+            market_regime={"adx": 20, "regime_type": "trending_weak"},
+            signal_context=full_context,
+            volatility_state={"atr_percentile": 60}
+        )
+
+        # Verify comprehensive integration
+        assert len(result) > 5000, "Full assembly should be substantial"
+        assert "48.5" in result, "Overall win rate should be present"
+        assert "Wave 2" in result, "Best wave should be present"
+        assert "London" in result, "Best session should be present"
+        assert "complex" in result.lower(), "Complex corrections should be included (high ambiguity)"
+
+        # Verify token budget
+        token_count = builder.estimate_tokens(result)
+        assert token_count <= 15000, f"Assembly ({token_count} tokens) should stay under budget"
