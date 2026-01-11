@@ -372,6 +372,122 @@ class TestSingletonInstance:
         assert isinstance(claude_client, ClaudeClient)
 
 
+class TestDynamicInstructions:
+    """Test dynamic instruction assembly integration."""
+
+    @pytest.fixture
+    def dynamic_client(self) -> ClaudeClient:
+        """Create ClaudeClient with dynamic instructions enabled."""
+        return ClaudeClient(use_dynamic_instructions=True)
+
+    @pytest.fixture
+    def trending_regime(self) -> dict:
+        """Standard trending market regime."""
+        return {"adx": 30, "regime_type": "trending_strong"}
+
+    @pytest.fixture
+    def performance_context(self) -> dict:
+        """Full performance context with stats."""
+        return {
+            "looking_for": "entry",
+            "overall_win_rate": 55.0,
+            "best_wave_position": "Wave 2",
+            "worst_wave_position": "Wave 5",
+            "best_session": "London",
+            "worst_session": "Asian",
+            "calibrated_min_confidence": 65,
+            "current_streak": {"type": "win", "count": 3},
+        }
+
+    def test_get_system_prompt_uses_instruction_builder(
+        self, dynamic_client: ClaudeClient, trending_regime: dict
+    ) -> None:
+        """Test that _get_system_prompt uses InstructionBuilder when enabled."""
+        prompt = dynamic_client._get_system_prompt(
+            market_regime=trending_regime,
+            signal_context={"looking_for": "entry"},
+            volatility_state={"atr_percentile": 50},
+        )
+
+        # Verify dynamic content markers
+        assert "Wave" in prompt, "Should contain Elliott Wave content"
+        assert "confidence" in prompt.lower(), "Should contain confidence scoring"
+        assert len(prompt) > 20000, "Should have substantial content from modules"
+
+    def test_get_system_prompt_default_assembly(
+        self, dynamic_client: ClaudeClient
+    ) -> None:
+        """Test default assembly without market context."""
+        prompt = dynamic_client._get_system_prompt()
+
+        assert "Wave" in prompt, "Default assembly should include wave analysis"
+        assert len(prompt) > 15000, "Should have content from core modules"
+
+    def test_get_system_prompt_with_performance_context(
+        self, dynamic_client: ClaudeClient, performance_context: dict
+    ) -> None:
+        """Test performance context injection in system prompt."""
+        prompt = dynamic_client._get_system_prompt(signal_context=performance_context)
+
+        # Performance data should be injected
+        assert "55" in prompt or "55.0" in prompt, "Win rate should be injected"
+        assert "Wave 2" in prompt, "Best wave should be injected"
+        assert "London" in prompt, "Best session should be injected"
+
+    def test_get_system_prompt_losing_streak_warning(
+        self, dynamic_client: ClaudeClient
+    ) -> None:
+        """Test losing streak warning injection."""
+        signal_context = {
+            "looking_for": "entry",
+            "current_streak": {"type": "loss", "count": 4},
+        }
+
+        prompt = dynamic_client._get_system_prompt(signal_context=signal_context)
+
+        assert "WARNING" in prompt or "⚠️" in prompt, "Should have streak warning"
+
+    def test_get_system_prompt_volatile_regime(
+        self, dynamic_client: ClaudeClient
+    ) -> None:
+        """Test volatile regime module selection."""
+        market_regime = {"adx": 25, "regime_type": "trending"}
+        volatility_state = {"atr_percentile": 90}  # High volatility
+
+        prompt = dynamic_client._get_system_prompt(
+            market_regime=market_regime,
+            volatility_state=volatility_state,
+        )
+
+        # Should use volatile regime module
+        has_volatility = "volatility" in prompt.lower() or "ATR" in prompt
+        assert has_volatility, "Should include volatility content"
+
+    def test_get_system_prompt_token_budget_respected(
+        self, dynamic_client: ClaudeClient
+    ) -> None:
+        """Test assembled instructions stay under token budget."""
+        from src.config import get_settings
+
+        token_budget = get_settings().instruction_token_budget
+
+        # Test all regime combinations
+        regimes = [
+            {"adx": 35, "regime_type": "trending_strong"},
+            {"adx": 20, "regime_type": "trending_weak"},
+            {"adx": 12, "regime_type": "ranging"},
+        ]
+
+        for regime in regimes:
+            prompt = dynamic_client._get_system_prompt(
+                market_regime=regime,
+                signal_context={"looking_for": "entry", "wave_ambiguity": 40},
+            )
+            # chars/4 approximation
+            token_estimate = len(prompt) // 4
+            assert token_estimate <= token_budget, f"Regime {regime} exceeds token budget: {token_estimate}"
+
+
 class TestSignalContext:
     """Test signal context integration."""
 

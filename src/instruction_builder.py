@@ -27,7 +27,6 @@ class InstructionBuilder:
                          If None, uses config value or DEFAULT_TOKEN_BUDGET.
         """
         self.instructions_dir = INSTRUCTIONS_DIR
-        self._cache = {}
 
         # Load token budget from config or use default
         if token_budget is not None:
