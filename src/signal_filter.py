@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+from src.config import get_settings
 from src.database import Database, get_database
 from src.signal_parser import TradingSignal
 
@@ -54,14 +55,29 @@ class SignalConsistencyFilter:
     def __init__(
         self,
         db: Optional[Database] = None,
-        direction_change_cooldown_minutes: int = 60,
-        direction_change_min_confidence: int = 75,
-        rapid_flip_threshold_minutes: int = 30,
+        direction_change_cooldown_minutes: Optional[int] = None,
+        direction_change_min_confidence: Optional[int] = None,
+        rapid_flip_threshold_minutes: Optional[int] = None,
     ):
         self._db = db
-        self.direction_change_cooldown_minutes = direction_change_cooldown_minutes
-        self.direction_change_min_confidence = direction_change_min_confidence
-        self.rapid_flip_threshold_minutes = rapid_flip_threshold_minutes
+        settings = get_settings()
+        
+        # Use config values or provided overrides
+        self.direction_change_cooldown_minutes = (
+            direction_change_cooldown_minutes 
+            if direction_change_cooldown_minutes is not None
+            else settings.direction_change_cooldown_minutes
+        )
+        self.direction_change_min_confidence = (
+            direction_change_min_confidence
+            if direction_change_min_confidence is not None
+            else settings.direction_change_min_confidence
+        )
+        self.rapid_flip_threshold_minutes = (
+            rapid_flip_threshold_minutes
+            if rapid_flip_threshold_minutes is not None
+            else settings.rapid_flip_threshold_minutes
+        )
 
     @property
     def db(self) -> Database:

@@ -35,6 +35,8 @@ class RiskCheckReason(str, Enum):
     MT5_DISCONNECTED = "mt5_disconnected"
     TOO_CLOSE_TO_KEY_LEVEL = "too_close_to_key_level"
     DRAWDOWN_LIMIT_EXCEEDED = "drawdown_limit_exceeded"
+    PORTFOLIO_HEAT_EXCEEDED = "portfolio_heat_exceeded"
+    CORRELATION_RISK_HIGH = "correlation_risk_high"
 
 
 @dataclass
@@ -136,7 +138,7 @@ class RiskGuard:
         account_balance = account.get("balance", 0) if account else 0
         position_modifier = 1.0
 
-        if account_balance > 0:
+        if self.config.enable_drawdown_check and account_balance > 0:
             dd_result = self.drawdown_manager.validate(account_balance)
             if not dd_result.trading_allowed:
                 logger.warning(
@@ -151,12 +153,15 @@ class RiskGuard:
             logger.info(
                 f"[RiskGuard] PASSED: drawdown_check (modifier={position_modifier})"
             )
+        elif not self.config.enable_drawdown_check:
+            logger.warning("[RiskGuard] SKIPPED: drawdown_check (disabled in config)")
 
         # Run checks in order of importance
         checks = [
             ("duplicate", self._check_duplicate),
             ("direction_conflict", self._check_direction_conflict),
             ("key_level_proximity", self._check_key_level_proximity),
+            ("portfolio_risk", self._check_portfolio_risk),
             ("exposure_limits", self._check_exposure_limits),
             ("account_risk", self._check_account_risk),
         ]
@@ -624,6 +629,91 @@ class RiskGuard:
             if level < price:
                 return level
         return None
+
+    def _check_portfolio_risk(self, signal: TradingSignal) -> RiskCheckResult:
+        """Check portfolio-level risk constraints.
+        
+        Uses PortfolioRiskManager to validate:
+        - Total portfolio heat
+        - Correlation risk
+        - Position concentration
+        - Dynamic risk adjustments
+        
+        Args:
+            signal: Trading signal
+            
+        Returns:
+            RiskCheckResult
+        """
+        from src.portfolio_risk_manager import get_portfolio_risk_manager
+        
+        portfolio_manager = get_portfolio_risk_manager()
+        
+        # Calculate proposed position risk
+        account = self.mt5.get_account_info()
+        if not account:
+            logger.warning("Cannot get account info for portfolio risk check")
+            return RiskCheckResult(passed=True)
+        
+        balance = account.get("balance", 0)
+        if balance <= 0:
+            return RiskCheckResult(passed=True)
+        
+        # Estimate risk for proposed position
+        s = signal.signal
+        if s.entry_price and s.stop_loss:
+            # Simplified risk calculation
+            sl_distance = abs(s.entry_price - s.stop_loss)
+            estimated_volume = 0.05  # Default estimate
+            proposed_risk = sl_distance * estimated_volume * 100  # For gold
+            
+            # Check if position allowed
+            allowed, reason = portfolio_manager.check_position_allowed(
+                signal.symbol, proposed_risk
+            )
+            
+            if not allowed:
+                # Determine specific rejection reason
+                if "heat" in reason.lower():
+                    return RiskCheckResult(
+                        passed=False,
+                        reason=RiskCheckReason.PORTFOLIO_HEAT_EXCEEDED,
+                        message=reason
+                    )
+                elif "correlation" in reason.lower():
+                    return RiskCheckResult(
+                        passed=False,
+                        reason=RiskCheckReason.CORRELATION_RISK_HIGH,
+                        message=reason
+                    )
+                else:
+                    return RiskCheckResult(
+                        passed=False,
+                        reason=RiskCheckReason.MAX_POSITIONS_REACHED,
+                        message=reason
+                    )
+        
+        # Check if trading should be paused
+        should_pause, pause_reason = portfolio_manager.should_pause_trading()
+        if should_pause:
+            return RiskCheckResult(
+                passed=False,
+                reason=RiskCheckReason.PORTFOLIO_HEAT_EXCEEDED,
+                message=f"Trading paused: {pause_reason}"
+            )
+        
+        # Get dynamic risk adjustment
+        risk_adj = portfolio_manager.calculate_dynamic_risk()
+        
+        # Store adjustment factor for later use
+        self._portfolio_risk_adjustment = risk_adj.adjustment_factor
+        
+        logger.info(
+            f"[RiskGuard] Portfolio risk check passed. "
+            f"Risk adjustment: {risk_adj.adjustment_factor:.2f}x"
+        )
+        
+        return RiskCheckResult(passed=True)
 
 
 # Lazy singleton

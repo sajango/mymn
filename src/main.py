@@ -14,14 +14,16 @@ import logging
 import signal
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from typing import Optional
 
 from src.claude_client import claude_client
-from src.analytics import get_analytics_engine
 from src.config import get_settings
 from src.database import SignalStatus, get_database
+from src.market_regime import get_regime_detector
 from src.mt5_client import mt5_client
 from src.news_calendar import get_news_calendar
+from src.signal_parser import TradingSignal
 from src.scheduler import (
     create_scheduler,
     get_m15_trigger,
@@ -34,6 +36,7 @@ from src.telegram_bot import get_trading_bot
 from src.trade_executor import get_trade_executor
 from src.trailing_stop_manager import get_trailing_manager
 from src.reports import get_weekly_reporter
+from src.volatility_manager import get_volatility_manager
 
 # Configure logging with UTF-8 support for emoji handling on Windows
 settings = get_settings()
@@ -89,6 +92,8 @@ class TradingOrchestrator:
         self._spread_checker = None
         self._news_calendar = None
         self._weekly_reporter = None
+        self._regime_detector = None
+        self._volatility_manager = None
 
     @property
     def db(self):
@@ -145,6 +150,20 @@ class TradingOrchestrator:
         if self._weekly_reporter is None:
             self._weekly_reporter = get_weekly_reporter()
         return self._weekly_reporter
+    
+    @property
+    def regime_detector(self):
+        """Lazy load regime detector."""
+        if self._regime_detector is None:
+            self._regime_detector = get_regime_detector()
+        return self._regime_detector
+    
+    @property
+    def volatility_manager(self):
+        """Lazy load volatility manager."""
+        if self._volatility_manager is None:
+            self._volatility_manager = get_volatility_manager()
+        return self._volatility_manager
 
     def _reset_daily_counter_if_needed(self):
         """Reset daily auto-trade counter at midnight."""
@@ -321,9 +340,99 @@ class TradingOrchestrator:
                 self._consecutive_failures += 1
                 return
 
+            # 5a. Detect market regime
+            try:
+                # Load CSV data for regime detection
+                import pandas as pd
+                h4_data = pd.read_csv(csv_files['H4'])
+                h1_data = pd.read_csv(csv_files['H1'])
+                m30_data = pd.read_csv(csv_files['M30']) if 'M30' in csv_files else None
+                
+                # Detect regime
+                regime = self.regime_detector.detect_regime(h4_data, h1_data)
+                logger.info(
+                    f"Market regime: {regime.regime_type.value} "
+                    f"(confidence: {regime.confidence}%, volatility: {regime.volatility_state})"
+                )
+                
+                # Save regime to market memory
+                self.db.save_market_memory(
+                    memory_type="market_regime",
+                    key="current_regime",
+                    value=regime.regime_type.value,
+                    confidence=regime.confidence,
+                    expires_hours=4  # Regime valid for 4 hours
+                )
+            except Exception as e:
+                logger.warning(f"Regime detection failed: {e}")
+                regime = None
+            
+            # 5b. Analyze volatility
+            volatility_profile = None
+            try:
+                if m30_data is not None:
+                    volatility_profile = self.volatility_manager.analyze_volatility(
+                        h4_data, h1_data, m30_data
+                    )
+                    logger.info(
+                        f"Volatility: {volatility_profile.state.value} "
+                        f"(percentile: {volatility_profile.atr_percentile}%, "
+                        f"trend: {volatility_profile.volatility_trend})"
+                    )
+                    
+                    # Log volatility dashboard
+                    dashboard = self.volatility_manager.get_volatility_dashboard(volatility_profile)
+                    logger.debug(dashboard)
+                    
+                    # Check entry filter
+                    if volatility_profile.entry_filter == "avoid":
+                        logger.warning("Volatility too extreme - avoiding new entries")
+                        self.db.save_skipped_signal(
+                            reason="extreme_volatility",
+                            details=volatility_profile.description,
+                            session=session_info.session.value,
+                        )
+                        return
+                    
+                    # Save volatility state to memory
+                    self.db.save_market_memory(
+                        memory_type="volatility",
+                        key="current_state", 
+                        value=f"{volatility_profile.state.value} ({volatility_profile.volatility_trend})",
+                        confidence=volatility_profile.atr_percentile,
+                        expires_hours=2  # Volatility memory expires faster
+                    )
+                        
+            except Exception as e:
+                logger.warning(f"Volatility analysis failed: {e}")
+
             # 6. Run Claude analysis
+            # Prepare regime dict for Claude if available
+            regime_dict = None
+            if regime:
+                regime_dict = {
+                    'regime_type': regime.regime_type.value,
+                    'confidence': regime.confidence,
+                    'trend_strength': regime.trend_strength,
+                    'volatility_state': regime.volatility_state,
+                    'volatility_percentile': regime.volatility_percentile,
+                    'direction_bias': regime.direction_bias,
+                    'description': regime.description
+                }
+            
+            # Prepare volatility dict for Claude if available
+            volatility_dict = None
+            if volatility_profile:
+                volatility_dict = {
+                    'state': volatility_profile.state.value,
+                    'atr_percentile': volatility_profile.atr_percentile,
+                    'trend': volatility_profile.volatility_trend,
+                    'entry_filter': volatility_profile.entry_filter,
+                    'expansion': volatility_profile.expansion_signal
+                }
+            
             signal = await loop.run_in_executor(
-                executor, claude_client.analyze, csv_files
+                executor, claude_client.analyze, csv_files, regime_dict, volatility_dict
             )
             if signal is None:
                 logger.error("Claude analysis returned None")
@@ -332,17 +441,63 @@ class TradingOrchestrator:
 
             # 7. Apply session modifier to confidence
             original_conf = signal.signal.confidence
-            adjusted_conf = self.session_detector.apply_session_modifier(
+            session_adjusted = self.session_detector.apply_session_modifier(
                 original_conf, session_info
             )
-            signal.signal.confidence = adjusted_conf
-            logger.info(
-                f"Confidence: {original_conf} {session_info.modifier:+d} = {adjusted_conf}"
-            )
+            
+            # 7a. Apply regime modifier to confidence
+            if regime:
+                regime_adjusted = session_adjusted + regime.confidence_modifier
+                regime_adjusted = max(min(regime_adjusted, 100), 0)
+                
+                # 7b. Apply volatility modifier
+                if volatility_profile:
+                    final_adjusted = regime_adjusted + volatility_profile.confidence_impact
+                    final_adjusted = max(min(final_adjusted, 100), 0)
+                    logger.info(
+                        f"Confidence adjustments: {original_conf} "
+                        f"{session_info.modifier:+d} (session) "
+                        f"{regime.confidence_modifier:+d} (regime) "
+                        f"{volatility_profile.confidence_impact:+d} (volatility) "
+                        f"= {final_adjusted}"
+                    )
+                    signal.signal.confidence = final_adjusted
+                    adjusted_conf = final_adjusted
+                else:
+                    logger.info(
+                        f"Confidence adjustments: {original_conf} "
+                        f"{session_info.modifier:+d} (session) "
+                        f"{regime.confidence_modifier:+d} (regime) "
+                        f"= {regime_adjusted}"
+                    )
+                    signal.signal.confidence = regime_adjusted
+                    adjusted_conf = regime_adjusted
+            else:
+                # No regime data, but check volatility
+                if volatility_profile:
+                    vol_adjusted = session_adjusted + volatility_profile.confidence_impact
+                    vol_adjusted = max(min(vol_adjusted, 100), 0)
+                    logger.info(
+                        f"Confidence adjustments: {original_conf} "
+                        f"{session_info.modifier:+d} (session) "
+                        f"{volatility_profile.confidence_impact:+d} (volatility) "
+                        f"= {vol_adjusted}"
+                    )
+                    signal.signal.confidence = vol_adjusted
+                    adjusted_conf = vol_adjusted
+                else:
+                    signal.signal.confidence = session_adjusted
+                    adjusted_conf = session_adjusted
+                    logger.info(
+                        f"Confidence: {original_conf} {session_info.modifier:+d} = {adjusted_conf}"
+                    )
 
             # 8. Save signal to database
             signal_id = self.db.save_signal(signal)
             logger.info(f"Signal saved: id={signal_id}, action={signal.signal.action}")
+
+            # 8a. Save market memories from signal
+            self._save_signal_memories(signal, adjusted_conf)
 
             # 9. Check confidence threshold
             if adjusted_conf < config.confidence_threshold:
@@ -457,36 +612,61 @@ class TradingOrchestrator:
         """
         try:
             logger.info("Generating weekly report...")
-            report = self.weekly_reporter.generate_weekly_report()
-
-            # Save to files (JSON + CSV)
-            engine = get_analytics_engine()
-            saved = engine.save_to_files()
-            logger.info(f"Weekly report saved to: {list(saved.keys())}")
-
+            
+            # Use new performance analytics
+            from src.performance_analytics import get_performance_analytics
+            analytics = get_performance_analytics()
+            
+            # Generate comprehensive report
+            report = analytics.generate_performance_report()
+            
+            # Save report to file
+            from pathlib import Path
+            import json
+            reports_dir = Path("data/reports")
+            reports_dir.mkdir(exist_ok=True)
+            
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+            report_path = reports_dir / f"weekly_report_{timestamp}.json"
+            
+            with open(report_path, 'w') as f:
+                json.dump(report, f, indent=2, default=str)
+            
+            logger.info(f"Weekly report saved to: {report_path}")
+            
             # Extract key metrics for notification
-            overall = report.get("overall_metrics", {})
-            period = report.get("period", {})
-            suggestions = report.get("suggestions", [])
-
+            metrics = report.get('overall_metrics', {})
+            insights = report.get('optimization_insights', {})
+            
             # Build summary message
-            message = (
-                f"*Weekly Performance Report*\n"
-                f"Period: {period.get('start')} to {period.get('end')}\n\n"
-                f"Trades: {overall.get('total_trades', 0)}\n"
-                f"Win Rate: {overall.get('win_rate', 0)}%\n"
-                f"Profit Factor: {overall.get('profit_factor', 0)}\n"
-                f"Return: {overall.get('total_return_percent', 0)}%\n"
-                f"Max DD: {overall.get('max_drawdown_percent', 0)}%\n"
-                f"Sharpe: {overall.get('sharpe_ratio', 0)}"
-            )
-
-            if suggestions:
-                message += "\n\n*Suggestions:*\n"
-                for s in suggestions[:3]:  # Limit to 3 suggestions
-                    message += f"• {s}\n"
-
-            await self.bot.send_message(message)
+            message = [
+                "*📊 Weekly Performance Report*\n",
+                f"📈 *Results*",
+                f"Trades: {metrics.get('total_trades', 0)}",
+                f"Win Rate: {metrics.get('win_rate', 0):.1f}%",
+                f"Profit Factor: {metrics.get('profit_factor', 0):.2f}",
+                f"Total P&L: ${metrics.get('total_pnl', 0):.2f}",
+                f"Max DD: {metrics.get('max_drawdown_percent', 0):.1f}%",
+                f"Sharpe: {metrics.get('sharpe_ratio', 0):.2f}"
+            ]
+            
+            # Add top performing pattern
+            patterns = report.get('pattern_performance', [])
+            if patterns:
+                best_pattern = patterns[0]
+                message.extend([
+                    "",
+                    f"🌊 *Best Pattern*",
+                    f"{best_pattern['pattern']}: {best_pattern['win_rate']:.0f}% win rate"
+                ])
+            
+            # Add recommendations
+            if insights.get('recommendations'):
+                message.extend(["", "*💡 Insights*"])
+                for rec in insights['recommendations'][:2]:
+                    message.append(f"• {rec}")
+            
+            await self.bot.send_message("\n".join(message))
             logger.info("Weekly report sent successfully")
 
         except Exception as e:
@@ -519,6 +699,85 @@ class TradingOrchestrator:
         except Exception as e:
             logger.exception(f"Trade execution failed: {e}")
             return False
+
+    def _save_signal_memories(self, signal: TradingSignal, confidence: int):
+        """Save important signal data to market memory.
+        
+        Args:
+            signal: Trading signal with wave analysis
+            confidence: Adjusted confidence score
+        """
+        try:
+            # Save wave position if available
+            if signal.wave_analysis and signal.wave_analysis.wave_position:
+                self.db.save_market_memory(
+                    memory_type="wave_count",
+                    key="current_wave",
+                    value=signal.wave_analysis.wave_position,
+                    confidence=confidence,
+                    expires_hours=24  # Wave counts valid for 24 hours
+                )
+            
+            # Save identified pattern
+            if signal.signal.action != "NO_TRADE":
+                pattern_desc = f"{signal.signal.action} signal at {signal.signal.entry_price}"
+                self.db.save_market_memory(
+                    memory_type="pattern",
+                    key=f"signal_{signal.signal.action}",
+                    value=pattern_desc,
+                    confidence=confidence,
+                    expires_hours=12  # Patterns valid for 12 hours
+                )
+            
+            # Save key levels from signal
+            if signal.signal.stop_loss:
+                self.db.save_market_memory(
+                    memory_type="key_level",
+                    key="recent_sl",
+                    value=str(signal.signal.stop_loss),
+                    confidence=90,  # Stop levels are important
+                    expires_hours=48
+                )
+                
+            logger.debug("Signal memories saved to database")
+            
+        except Exception as e:
+            logger.warning(f"Failed to save signal memories: {e}")
+
+    def _can_auto_trade(self, confidence: int) -> tuple[bool, str]:
+        """Check if signal should be auto-traded.
+        
+        Args:
+            confidence: Signal confidence level
+            
+        Returns:
+            Tuple of (can_auto_trade, reason)
+        """
+        config = get_settings()
+        
+        # Check if auto-trading is enabled
+        if not config.auto_trade_enabled:
+            return False, "Auto-trading disabled"
+            
+        # Check confidence threshold
+        if confidence < config.auto_trade_confidence:
+            return False, f"Confidence {confidence}% below auto-trade threshold {config.auto_trade_confidence}%"
+            
+        # Check daily limit
+        today = datetime.now(timezone.utc).date()
+        if self._last_trade_date != today:
+            self._daily_auto_trades = 0
+            self._last_trade_date = today
+            
+        if self._daily_auto_trades >= config.auto_trade_max_daily:
+            return False, f"Daily auto-trade limit reached ({config.auto_trade_max_daily})"
+            
+        # Check drawdown state
+        drawdown_state = self.db.get_latest_drawdown_state()
+        if drawdown_state and drawdown_state.get('trading_paused'):
+            return False, "Trading paused due to drawdown"
+            
+        return True, "All conditions met"
 
     async def run(self):
         """Main run loop."""

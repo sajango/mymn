@@ -71,6 +71,8 @@ class TradingBot:
         self.app.add_handler(CommandHandler("help", self._handle_help))
         self.app.add_handler(CommandHandler("positions", self._handle_positions))
         self.app.add_handler(CommandHandler("analytics", self._handle_analytics))
+        self.app.add_handler(CommandHandler("performance", self._handle_performance))
+        self.app.add_handler(CommandHandler("risk", self._handle_risk))
 
         # Add callback handler for inline buttons
         self.app.add_handler(CallbackQueryHandler(self._handle_callback))
@@ -282,6 +284,7 @@ class TradingBot:
             f"/status - System status\n"
             f"/positions - Active positions\n"
             f"/analytics - Performance report\n"
+            f"/performance - Detailed analytics\n"
             f"/help - Help message",
             parse_mode="Markdown",
         )
@@ -356,6 +359,154 @@ class TradingBot:
 
         logger.info("[ANALYTICS] Generating analytics report for Telegram...")
         await self.send_analytics_report()
+    
+    async def _handle_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /performance command - send detailed performance report."""
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized /performance from {update.effective_chat.id}")
+            return
+        
+        logger.info("[PERFORMANCE] Generating performance report...")
+        
+        try:
+            from src.performance_analytics import get_performance_analytics
+            analytics = get_performance_analytics()
+            
+            # Generate comprehensive report
+            report = analytics.generate_performance_report()
+            
+            # Format for Telegram - Overall Metrics
+            metrics = report['overall_metrics']
+            msg_parts = [
+                "*🎯 Performance Report*\n",
+                f"📊 *Overall Stats*",
+                f"Trades: {metrics['total_trades']} ({metrics['winning_trades']}W/{metrics['losing_trades']}L)",
+                f"Win Rate: {metrics['win_rate']:.1f}%",
+                f"Profit Factor: {metrics['profit_factor']:.2f}",
+                f"Total P&L: ${metrics['total_pnl']:.2f}",
+                f"Avg Win: ${metrics['average_win']:.2f}",
+                f"Avg Loss: ${metrics['average_loss']:.2f}",
+                f"Max DD: {metrics['max_drawdown_percent']:.1f}%\n",
+                
+                f"📈 *Risk-Adjusted Returns*",
+                f"Sharpe: {metrics['sharpe_ratio']:.2f}",
+                f"Sortino: {metrics['sortino_ratio']:.2f}",
+                f"Calmar: {metrics['calmar_ratio']:.2f}\n"
+            ]
+            
+            # Pattern Performance
+            if report.get('pattern_performance'):
+                msg_parts.append("🌊 *Top Wave Patterns*")
+                for pattern in report['pattern_performance'][:3]:
+                    msg_parts.append(
+                        f"{pattern['pattern']}: {pattern['win_rate']:.0f}% win, "
+                        f"${pattern['total_profit']:.0f} profit"
+                    )
+                msg_parts.append("")
+            
+            # Optimization Insights
+            insights = report.get('optimization_insights', {})
+            if insights.get('recommendations'):
+                msg_parts.append("💡 *Optimization Insights*")
+                for rec in insights['recommendations'][:3]:
+                    msg_parts.append(f"• {rec}")
+                msg_parts.append("")
+            
+            # Risk Analysis
+            risk = report.get('risk_analysis', {})
+            if risk:
+                msg_parts.append("⚠️ *Risk Analysis*")
+                msg_parts.append(f"VaR 95%: ${risk.get('var_95', 0):.2f}")
+                msg_parts.append(f"Risk of Ruin: {risk.get('risk_of_ruin', 0):.1%}")
+                msg_parts.append(f"Kelly %: {risk.get('kelly_criterion', 0):.1f}%")
+                
+            await update.message.reply_text(
+                "\n".join(msg_parts),
+                parse_mode="Markdown"
+            )
+            
+        except Exception as e:
+            logger.error(f"Performance report error: {e}")
+            await update.message.reply_text(
+                "Error generating performance report. Please try again later."
+            )
+    
+    async def _handle_risk(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /risk command - show portfolio risk report."""
+        if not self._is_authorized(update):
+            logger.warning(f"Unauthorized /risk from {update.effective_chat.id}")
+            return
+        
+        logger.info("[RISK] Generating portfolio risk report...")
+        
+        try:
+            from src.portfolio_risk_manager import get_portfolio_risk_manager
+            risk_manager = get_portfolio_risk_manager()
+            
+            # Generate risk report
+            report = risk_manager.get_risk_report()
+            
+            # Format for Telegram
+            msg_parts = ["*⚠️ Portfolio Risk Report*\n"]
+            
+            # Portfolio Heat
+            heat = report['portfolio_heat']
+            heat_emoji = "🟢" if heat['status'] == 'green' else "🟡" if heat['status'] == 'yellow' else "🔴"
+            
+            msg_parts.extend([
+                f"{heat_emoji} *Portfolio Heat*",
+                f"Total Exposure: ${heat['total_exposure']:.2f}",
+                f"Heat Level: {heat['heat_percentage']:.1f}%",
+                f"Positions: {heat['position_count']}",
+                f"Correlation Risk: +{heat['correlated_risk']:.1f}%\n"
+            ])
+            
+            # Risk Adjustment
+            adj = report['risk_adjustment']
+            msg_parts.extend([
+                "📊 *Risk Settings*",
+                f"Current Risk: {adj['current_risk']:.1f}%",
+                f"Recommended: {adj['recommended_risk']:.1f}%",
+                f"Adjustment: {adj['adjustment_factor']:.2f}x",
+                f"Reason: {adj['reason']}\n"
+            ])
+            
+            # Trading Status
+            status = report['trading_status']
+            if status['paused']:
+                msg_parts.extend([
+                    "🚫 *TRADING PAUSED*",
+                    f"Reason: {status['reason']}\n"
+                ])
+            else:
+                msg_parts.append("✅ *Trading Active*\n")
+            
+            # Correlations
+            if report.get('correlations'):
+                msg_parts.append("🔗 *Correlation Risks*")
+                for corr in report['correlations'][:3]:
+                    corr_emoji = "⚠️" if corr['risk'] == 'High' else "📊"
+                    msg_parts.append(
+                        f"{corr_emoji} {corr['pair']}: {corr['correlation']:.0%}"
+                    )
+                msg_parts.append("")
+            
+            # Recommendations
+            if report.get('recommendations'):
+                msg_parts.append("💡 *Recommendations*")
+                for rec in report['recommendations'][:5]:
+                    msg_parts.append(rec)
+            
+            await update.message.reply_text(
+                "\n".join(msg_parts),
+                parse_mode="Markdown"
+            )
+            
+        except Exception as e:
+            logger.error(f"Risk report error: {e}")
+            await update.message.reply_text(
+                "Error generating risk report. Please try again later."
+            )
 
     def _format_overall_stats(self, metrics: dict) -> str:
         """Format overall trading statistics for Telegram."""

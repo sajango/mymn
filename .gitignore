@@ -64,3 +64,5 @@ dist/
 data/*
 plans/*
 logs/*
+
+.claude/*

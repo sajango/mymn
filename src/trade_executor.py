@@ -17,6 +17,8 @@ from src.mt5_client import MT5Client, mt5_client
 from src.risk_guard import RiskGuard, get_risk_guard
 from src.signal_filter import SignalConsistencyFilter, get_signal_filter
 from src.signal_parser import SignalAction, TradingSignal
+from src.multi_tp_manager import get_multi_tp_manager
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +236,53 @@ class TradeExecutor:
         """
         s = signal.signal
         symbol = signal.symbol
+        
+        # Get volatility profile if available
+        volatility_factor = 1.0
+        sl_adjustment_factor = 1.0
+        
+        try:
+            # Load recent data for volatility analysis (if available)
+            csv_dir = self.settings.csv_dir
+            h4_path = csv_dir / f"{symbol}_H4.csv"
+            h1_path = csv_dir / f"{symbol}_H1.csv"
+            m30_path = csv_dir / f"{symbol}_M30.csv"
+            
+            if h4_path.exists() and h1_path.exists() and m30_path.exists():
+                h4_data = pd.read_csv(h4_path)
+                h1_data = pd.read_csv(h1_path)
+                m30_data = pd.read_csv(m30_path)
+                
+                # Get volatility manager
+                from src.volatility_manager import get_volatility_manager
+                vol_manager = get_volatility_manager()
+                
+                # Analyze current volatility
+                vol_profile = vol_manager.analyze_volatility(h4_data, h1_data, m30_data)
+                
+                # Check if we should filter this entry
+                if vol_manager.should_filter_entry(vol_profile.entry_filter, s.confidence):
+                    logger.warning(f"Entry filtered by volatility manager: {vol_profile.description}")
+                    self.db.update_signal_status(signal_id, SignalStatus.REJECTED)
+                    return {
+                        "status": "rejected",
+                        "signal_id": signal_id,
+                        "reason": "volatility_filter",
+                        "details": vol_profile.description
+                    }
+                
+                # Get adjustment factors
+                volatility_factor = vol_profile.position_size_factor
+                sl_adjustment_factor = vol_profile.sl_adjustment_factor
+                
+                logger.info(
+                    f"Volatility adjustments: position={volatility_factor:.2f}x, "
+                    f"sl={sl_adjustment_factor:.2f}x ({vol_profile.state.value})"
+                )
+                
+        except Exception as e:
+            logger.warning(f"Volatility analysis failed: {e}")
+            # Continue with default factors
 
         # Validate we have required fields
         if s.entry_price is None or s.stop_loss is None:
@@ -244,8 +293,54 @@ class TradeExecutor:
                 "reason": "missing_entry_or_sl",
             }
 
-        # Get TP1 for initial order (if available)
-        tp1_price = s.take_profit[0].price if s.take_profit else s.entry_price
+        # Create multi-TP exit plan
+        tp_manager = get_multi_tp_manager()
+        
+        # Get market conditions for exit planning
+        market_regime = None
+        volatility_state = 'normal'
+        
+        # Try to get latest market memory
+        try:
+            regime_memory = self.db.get_latest_market_memory('market_regime')
+            if regime_memory:
+                market_regime = regime_memory.get('memory_value')
+                
+            vol_memory = self.db.get_latest_market_memory('volatility')
+            if vol_memory:
+                vol_state_str = vol_memory.get('memory_value', '')
+                volatility_state = vol_state_str.split(' ')[0] if vol_state_str else 'normal'
+        except Exception as e:
+            logger.debug(f"Could not get market memory: {e}")
+        
+        # Create exit plan
+        exit_plan = tp_manager.create_exit_plan(
+            entry_price=s.entry_price,
+            stop_loss=s.stop_loss,
+            direction=s.action.value,
+            confidence=s.confidence,
+            market_regime=market_regime,
+            volatility_state=volatility_state,
+            atr=15,  # Default ATR, would get from data
+            wave_pattern=signal.wave_analysis.wave_position if signal.wave_analysis else None
+        )
+        
+        logger.info(
+            f"Exit plan: {exit_plan.strategy.value} strategy, "
+            f"{len(exit_plan.tp_levels)} TP levels, "
+            f"Expected R:R: {exit_plan.expected_value:.2f}"
+        )
+        
+        # Use TP1 for initial order (MT5 doesn't support multiple TPs natively)
+        tp1_price = exit_plan.tp_levels[0].price if exit_plan.tp_levels else s.entry_price
+        
+        # Note: We could adjust stop loss here based on volatility if desired
+        # For now, we trust the signal's stop loss but log the suggested adjustment
+        if sl_adjustment_factor != 1.0:
+            logger.info(
+                f"Volatility suggests SL adjustment factor: {sl_adjustment_factor:.2f}x "
+                f"(not applied - using signal SL: {s.stop_loss})"
+            )
 
         # Validate SL/TP direction consistency
         validation_error = self._validate_sl_tp_direction(
@@ -280,6 +375,15 @@ class TradeExecutor:
             stop_loss=s.stop_loss,
             confidence=s.confidence,
         )
+        
+        # Apply volatility adjustment first
+        if volatility_factor != 1.0:
+            original_volume = volume
+            volume = round(volume * volatility_factor, 2)
+            logger.info(
+                f"Position adjusted by volatility: "
+                f"{original_volume} -> {volume} (factor={volatility_factor})"
+            )
 
         # Apply drawdown manager position modifier
         if position_modifier < 1.0:
@@ -320,6 +424,35 @@ class TradeExecutor:
             volume=volume,
             signal=signal,
         )
+        
+        # Save exit plan details as market memory
+        try:
+            exit_plan_data = {
+                'strategy': exit_plan.strategy.value,
+                'tp_levels': [
+                    {
+                        'name': tp.level_name,
+                        'price': tp.price,
+                        'percentage': tp.percentage,
+                        'rr': tp.risk_reward
+                    }
+                    for tp in exit_plan.tp_levels
+                ],
+                'breakeven_trigger': exit_plan.breakeven_trigger,
+                'time_stop_hours': exit_plan.time_stop_hours,
+                'expected_value': exit_plan.expected_value
+            }
+            
+            import json
+            self.db.save_market_memory(
+                memory_type='exit_plan',
+                key=f'trade_{trade_id}',
+                value=json.dumps(exit_plan_data),
+                confidence=100,
+                expires_hours=72  # Keep for 3 days
+            )
+        except Exception as e:
+            logger.warning(f"Could not save exit plan: {e}")
 
         # Update signal status
         self.db.update_signal_status(signal_id, SignalStatus.EXECUTED)

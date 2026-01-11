@@ -223,13 +223,16 @@ class ClaudeClient:
             return False
 
     def _build_prompt(
-        self, csv_files: dict[str, Path], signal_context: Optional[dict] = None
+        self, csv_files: dict[str, Path], signal_context: Optional[dict] = None,
+        market_regime: Optional[dict] = None, volatility_state: Optional[dict] = None
     ) -> str:
         """Build analysis prompt with CSV data references and optional signal context.
 
         Args:
             csv_files: Dict mapping timeframe to CSV file path
             signal_context: Optional context from recent signals
+            market_regime: Optional market regime information
+            volatility_state: Optional volatility state information
 
         Returns:
             Prompt string for analysis
@@ -254,7 +257,7 @@ class ClaudeClient:
             "",
         ]
 
-        # Add signal context if available
+        # Add enhanced signal context if available
         if signal_context:
             prompt_parts.extend([
                 "## PREVIOUS ANALYSIS CONTEXT",
@@ -271,6 +274,31 @@ class ClaudeClient:
                     f"**Last Wave Position:** {signal_context['wave_position']}"
                 )
 
+            # Add performance context
+            if signal_context.get("current_streak"):
+                streak = signal_context["current_streak"]
+                prompt_parts.append(
+                    f"**Current Streak:** {streak['count']} {streak['type']} trades in a row"
+                )
+
+            if signal_context.get("session_performance"):
+                perf = signal_context["session_performance"]
+                best_session = max(perf.items(), key=lambda x: x[1].get('win_rate', 0) if x[1].get('total', 0) > 2 else 0)
+                if best_session[1].get('total', 0) > 2:
+                    prompt_parts.append(
+                        f"**Best Session:** {best_session[0]} with {best_session[1]['win_rate']:.0f}% win rate"
+                    )
+
+            # Add market memory insights
+            if signal_context.get("market_memory"):
+                memories = signal_context["market_memory"]
+                recent_patterns = [m for m in memories if m['memory_type'] == 'pattern'][:2]
+                if recent_patterns:
+                    prompt_parts.append("")
+                    prompt_parts.append("**Market Memory:**")
+                    for mem in recent_patterns:
+                        prompt_parts.append(f"- {mem['memory_value']} (confidence: {mem.get('confidence', 'N/A')}%)")
+
             prompt_parts.extend([
                 "",
                 "## DIRECTION CHANGE REQUIREMENTS",
@@ -279,14 +307,92 @@ class ClaudeClient:
                 "",
                 "1. **Explain Wave Count Change:** What price action invalidated previous count?",
                 "2. **Identify Trigger:** What new development triggered this reassessment?",
-                "3. **Confidence Threshold:** Direction changes require confidence >= 75%",
-                "4. **Time Consideration:** Signals within 60 min of opposite need strong justification",
+                "3. **Confidence Threshold:** Direction changes require confidence >= 65%",
+                "4. **Time Consideration:** Signals within 30 min of opposite need strong justification",
                 "",
                 "If market conditions similar to last analysis, maintain consistency unless clear evidence of change.",
                 "",
-                "---",
+            ])
+
+            # Add risk awareness based on streak
+            if signal_context.get("current_streak") and signal_context["current_streak"]['type'] == 'loss' and signal_context["current_streak"]['count'] >= 2:
+                streak = signal_context["current_streak"]
+                prompt_parts.extend([
+                    "## RISK AWARENESS",
+                    "",
+                    f"**Warning:** System is on a {streak['count']}-trade losing streak.",
+                    "Be extra cautious and only signal high-confidence setups.",
+                    "",
+                ])
+
+            prompt_parts.append("---")
+            prompt_parts.append("")
+
+        # Add market regime information if available
+        if market_regime:
+            prompt_parts.extend([
+                "## CURRENT MARKET REGIME",
+                "",
+                f"**Regime Type:** {market_regime.get('regime_type', 'Unknown')}",
+                f"**Volatility State:** {market_regime.get('volatility_state', 'normal')}",
+                f"**Trend Strength:** {market_regime.get('trend_strength', 0):.1f}",
+                f"**Direction Bias:** {market_regime.get('direction_bias', 'neutral')}",
                 "",
             ])
+            
+            # Add regime-specific guidance
+            regime_type = market_regime.get('regime_type', '')
+            if 'high_volatility' in regime_type or 'extreme_volatility' in regime_type:
+                prompt_parts.extend([
+                    "**Regime Guidance:** Market is highly volatile. Be extra cautious with entries.",
+                    "Prefer wider stops and smaller position sizes. Look for strong confirmations.",
+                    "",
+                ])
+            elif 'strong_trend' in regime_type:
+                prompt_parts.extend([
+                    "**Regime Guidance:** Strong trending market. Look for continuation patterns.",
+                    "Trend-following setups are preferred. Counter-trend trades need extra confirmation.",
+                    "",
+                ])
+            elif 'ranging' in regime_type:
+                prompt_parts.extend([
+                    "**Regime Guidance:** Range-bound market. Look for reversals at boundaries.",
+                    "Be cautious of breakout signals - many will be false in ranging markets.",
+                    "",
+                ])
+                
+            prompt_parts.append("---")
+            prompt_parts.append("")
+            
+        # Add volatility state information if available
+        if volatility_state:
+            prompt_parts.extend([
+                "## CURRENT VOLATILITY STATE",
+                "",
+                f"**Volatility Level:** {volatility_state.get('state', 'normal')}",
+                f"**ATR Percentile:** {volatility_state.get('atr_percentile', 50)}%",
+                f"**Volatility Trend:** {volatility_state.get('trend', 'stable')}",
+                f"**Entry Recommendation:** {volatility_state.get('entry_filter', 'allow')}",
+                "",
+            ])
+            
+            # Add volatility-specific guidance
+            vol_state = volatility_state.get('state', '')
+            if vol_state in ['extreme', 'high']:
+                prompt_parts.extend([
+                    "**Volatility Guidance:** Market is experiencing high volatility.",
+                    "Be extra selective with entries. Wider stops may be needed.",
+                    "",
+                ])
+            elif vol_state == 'compression':
+                prompt_parts.extend([
+                    "**Volatility Guidance:** Volatility compression detected.",
+                    "Potential breakout setup. Watch for directional expansion.",
+                    "",
+                ])
+                
+            prompt_parts.append("---")
+            prompt_parts.append("")
 
         prompt_parts.append("STEP 1: Read these CSV files using the Read tool:")
 
@@ -434,6 +540,8 @@ class ClaudeClient:
         self,
         csv_files: dict[str, Path],
         signal_context: Optional[dict] = None,
+        market_regime: Optional[dict] = None,
+        volatility_state: Optional[dict] = None,
         attempt: int = 0,
     ) -> Optional[str]:
         """Execute CLI with exponential backoff retry.
@@ -441,12 +549,15 @@ class ClaudeClient:
         Args:
             csv_files: CSV files for analysis
             signal_context: Optional context from recent signals
+            market_regime: Optional market regime information
+            volatility_state: Optional volatility state information
             attempt: Current attempt number
 
         Returns:
             CLI output or None if all retries fail
         """
-        prompt = self._build_prompt(csv_files, signal_context=signal_context)
+        prompt = self._build_prompt(csv_files, signal_context=signal_context, 
+                                   market_regime=market_regime, volatility_state=volatility_state)
         settings_file = None
 
         try:
@@ -466,7 +577,7 @@ class ClaudeClient:
                 delay = 2 ** attempt * 5  # 5s, 10s, 20s...
                 logger.warning(f"Retry {attempt + 1}/{self.max_retries} after {delay}s: {e}")
                 time.sleep(delay)
-                return self._retry_with_backoff(csv_files, signal_context, attempt + 1)
+                return self._retry_with_backoff(csv_files, signal_context, market_regime, volatility_state, attempt + 1)
             logger.error(f"All retries exhausted: {e}")
             return None
 
@@ -479,11 +590,14 @@ class ClaudeClient:
                 except Exception as cleanup_err:
                     logger.warning(f"[CLI] Failed to clean up settings file: {cleanup_err}")
 
-    def analyze(self, csv_files: dict[str, Path]) -> TradingSignal:
+    def analyze(self, csv_files: dict[str, Path], market_regime: Optional[dict] = None,
+                volatility_state: Optional[dict] = None) -> TradingSignal:
         """Run Elliott Wave analysis on CSV data.
 
         Args:
             csv_files: Dict mapping timeframe (H4, H1, M30, M15) to CSV path
+            market_regime: Optional market regime information
+            volatility_state: Optional volatility state information
 
         Returns:
             TradingSignal with analysis results or NO_TRADE on failure
@@ -534,24 +648,33 @@ class ClaudeClient:
 
         logger.info(f"[ANALYSIS] Instructions: {self.instructions_path}")
 
-        # Get signal context from database if available
+        # Get enhanced signal context from database if available
         signal_context = None
         if self._db:
             try:
-                signal_context = self._db.get_signal_context(limit=3)
+                signal_context = self._db.get_enhanced_signal_context(limit=5)
                 if signal_context:
                     logger.info(
                         f"[ANALYSIS] Signal context: last={signal_context['last_action']}, "
                         f"seq={signal_context['recent_sequence']}, "
                         f"mins_ago={signal_context['minutes_since_last']}"
                     )
+                    
+                    # Log additional context
+                    if signal_context.get('current_streak'):
+                        streak = signal_context['current_streak']
+                        logger.info(f"[ANALYSIS] Current streak: {streak['count']} {streak['type']}")
+                    
+                    if signal_context.get('session_performance'):
+                        logger.info(f"[ANALYSIS] Session performance: {signal_context['session_performance']}")
                 else:
                     logger.debug("[ANALYSIS] No previous signals for context")
             except Exception as ctx_err:
-                logger.warning(f"[ANALYSIS] Failed to get signal context: {ctx_err}")
+                logger.warning(f"[ANALYSIS] Failed to get enhanced context: {ctx_err}")
 
         # Run analysis with retry
-        response = self._retry_with_backoff(csv_files, signal_context=signal_context)
+        response = self._retry_with_backoff(csv_files, signal_context=signal_context,
+                                           market_regime=market_regime, volatility_state=volatility_state)
         if response is None:
             logger.error("[ANALYSIS] Claude CLI failed after all retries")
             return create_no_trade_signal(

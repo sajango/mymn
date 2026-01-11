@@ -9,10 +9,10 @@ Tracks:
 
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 from src.config import get_settings
 from src.signal_parser import TradingSignal
@@ -238,6 +238,50 @@ class Database:
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_drawdown_date ON drawdown_state(date)"
+            )
+
+            # Market memory table for persistent context
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS market_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    memory_type TEXT NOT NULL,
+                    memory_key TEXT NOT NULL,
+                    memory_value TEXT NOT NULL,
+                    confidence INTEGER,
+                    expires_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_type ON market_memory(memory_type)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_key ON market_memory(memory_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_expires ON market_memory(expires_at)"
+            )
+
+            # Signal outcomes table for performance tracking
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS signal_outcomes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_id INTEGER NOT NULL,
+                    trade_id INTEGER,
+                    predicted_direction TEXT NOT NULL,
+                    actual_movement REAL,
+                    tp_levels_hit INTEGER DEFAULT 0,
+                    accuracy_score REAL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (signal_id) REFERENCES signals (id),
+                    FOREIGN KEY (trade_id) REFERENCES trades (id)
+                )
+            """)
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_outcome_signal ON signal_outcomes(signal_id)"
             )
 
             conn.commit()
@@ -1090,6 +1134,374 @@ class Database:
                 "SELECT * FROM drawdown_state ORDER BY date DESC LIMIT 1"
             ).fetchone()
             return dict(row) if row else None
+
+    def get_trades_for_analytics(self, start_date=None, end_date=None, symbol=None) -> List[dict]:
+        """Get trades for analytics with optional filters.
+        
+        Args:
+            start_date: Start date filter
+            end_date: End date filter  
+            symbol: Symbol filter
+            
+        Returns:
+            List of trade dictionaries
+        """
+        query = """
+        SELECT t.*, s.confidence, s.action as signal_action,
+               s.wave_position
+        FROM trades t
+        LEFT JOIN signals s ON t.signal_id = s.id
+        WHERE t.status IN ('closed', 'partial_close')
+        """
+        params = []
+        
+        if start_date:
+            query += " AND t.entry_time >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND t.entry_time <= ?"
+            params.append(end_date)
+        if symbol:
+            query += " AND t.symbol = ?"
+            params.append(symbol)
+            
+        query += " ORDER BY t.entry_time"
+        
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_signals_with_regime(self) -> List[dict]:
+        """Get all signals with regime information."""
+        query = """
+        SELECT s.*, mm.memory_value as market_regime
+        FROM signals s
+        LEFT JOIN market_memory mm ON mm.memory_type = 'market_regime' 
+            AND mm.created_at >= datetime(s.timestamp, '-4 hours')
+        ORDER BY s.timestamp
+        """
+        
+        with self._get_connection() as conn:
+            rows = conn.execute(query).fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_signals_with_volatility(self) -> List[dict]:
+        """Get all signals with volatility state."""
+        query = """
+        SELECT s.*, mm.memory_value as volatility_state
+        FROM signals s
+        LEFT JOIN market_memory mm ON mm.memory_type = 'volatility'
+            AND mm.created_at >= datetime(s.timestamp, '-2 hours')
+        ORDER BY s.timestamp
+        """
+        
+        with self._get_connection() as conn:
+            rows = conn.execute(query).fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_signals_with_patterns(self) -> List[dict]:
+        """Get all signals with wave patterns."""
+        query = """
+        SELECT s.*, s.wave_position
+        FROM signals s
+        WHERE s.wave_position IS NOT NULL
+        ORDER BY s.timestamp
+        """
+        
+        with self._get_connection() as conn:
+            rows = conn.execute(query).fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_trade_by_signal_id(self, signal_id: int) -> Optional[dict]:
+        """Get trade associated with signal."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM trades WHERE signal_id = ?", (signal_id,)
+            ).fetchone()
+            return dict(row) if row else None
+    
+    def get_trades_by_session(self, session: str) -> List[dict]:
+        """Get trades for specific session."""
+        query = """
+        SELECT t.*, s.confidence
+        FROM trades t
+        LEFT JOIN signals s ON t.signal_id = s.id
+        WHERE s.session = ? AND t.status IN ('closed', 'partial_close')
+        ORDER BY t.entry_time
+        """
+        
+        with self._get_connection() as conn:
+            rows = conn.execute(query, (session,)).fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_all_signals_with_trades(self) -> List[dict]:
+        """Get all signals with their associated trades."""
+        query = """
+        SELECT s.*, t.id as trade_id, t.pnl, t.status as trade_status
+        FROM signals s
+        LEFT JOIN trades t ON s.id = t.signal_id
+        ORDER BY s.timestamp
+        """
+        
+        with self._get_connection() as conn:
+            rows = conn.execute(query).fetchall()
+            results = []
+            for row in rows:
+                signal_data = dict(row)
+                if signal_data.get('trade_id'):
+                    signal_data['trade'] = {
+                        'id': signal_data.pop('trade_id'),
+                        'pnl': signal_data.pop('pnl'),
+                        'status': signal_data.pop('trade_status')
+                    }
+                results.append(signal_data)
+            return results
+    
+    def get_latest_market_memory(self, memory_type: str, key: Optional[str] = None) -> Optional[dict]:
+        """Get latest market memory entry.
+        
+        Args:
+            memory_type: Type of memory to retrieve
+            key: Optional specific key
+            
+        Returns:
+            Latest memory entry or None
+        """
+        query = """
+        SELECT * FROM market_memory 
+        WHERE memory_type = ? 
+        AND (expires_at IS NULL OR expires_at > datetime('now'))
+        """
+        params = [memory_type]
+        
+        if key:
+            query += " AND key = ?"
+            params.append(key)
+            
+        query += " ORDER BY created_at DESC LIMIT 1"
+        
+        with self._get_connection() as conn:
+            row = conn.execute(query, params).fetchone()
+            return dict(row) if row else None
+
+    def save_market_memory(self, memory_type: str, key: str, value: str, 
+                          confidence: Optional[int] = None, 
+                          expires_hours: Optional[int] = None) -> int:
+        """Save market context to memory.
+
+        Args:
+            memory_type: Type of memory (wave_count, key_level, pattern)
+            key: Memory key identifier
+            value: Memory value (JSON string for complex data)
+            confidence: Confidence in this memory (0-100)
+            expires_hours: Hours until expiry (None = permanent)
+
+        Returns:
+            Memory ID
+        """
+        expires_at = None
+        if expires_hours:
+            expires_at = (datetime.now(timezone.utc) + 
+                         timedelta(hours=expires_hours)).isoformat()
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO market_memory (timestamp, memory_type, memory_key, 
+                                         memory_value, confidence, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    memory_type,
+                    key,
+                    value,
+                    confidence,
+                    expires_at,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+
+    def get_market_memory(self, memory_type: Optional[str] = None, 
+                         key: Optional[str] = None) -> list[dict]:
+        """Get market memories.
+
+        Args:
+            memory_type: Filter by type
+            key: Filter by key
+
+        Returns:
+            List of memory records
+        """
+        with self._get_connection() as conn:
+            query = """
+                SELECT * FROM market_memory 
+                WHERE (expires_at IS NULL OR expires_at > ?)
+            """
+            params = [datetime.now(timezone.utc).isoformat()]
+
+            if memory_type:
+                query += " AND memory_type = ?"
+                params.append(memory_type)
+            
+            if key:
+                query += " AND memory_key = ?"
+                params.append(key)
+
+            query += " ORDER BY created_at DESC"
+
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_enhanced_signal_context(self, limit: int = 5) -> Optional[dict]:
+        """Get comprehensive context including market state and performance.
+
+        Args:
+            limit: Number of recent signals to analyze
+
+        Returns:
+            Enhanced context dict with signals, performance, memory
+        """
+        try:
+            # Get basic signal context
+            basic_context = self.get_signal_context(limit)
+            if not basic_context:
+                return None
+
+            # Get performance by session
+            session_stats = self._get_session_performance_stats()
+
+            # Get current streak
+            streak_info = self._get_current_streak()
+
+            # Get market memory
+            market_memory = self.get_market_memory()
+
+            # Get recent key levels from memory
+            key_levels = [m for m in market_memory if m['memory_type'] == 'key_level']
+
+            # Enhanced context
+            return {
+                **basic_context,  # Include all basic context
+                'session_performance': session_stats,
+                'current_streak': streak_info,
+                'market_memory': market_memory,
+                'key_levels': key_levels,
+                'total_signals_today': self._count_signals_today(),
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting enhanced context: {e}")
+            return None
+
+    def _get_session_performance_stats(self) -> dict:
+        """Get win rate by trading session."""
+        with self._get_connection() as conn:
+            rows = conn.execute("""
+                SELECT 
+                    sess.session,
+                    COUNT(t.id) as total,
+                    SUM(CASE WHEN t.profit > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(t.profit) as avg_profit
+                FROM trades t
+                JOIN (
+                    SELECT id, 
+                           CASE 
+                               WHEN created_at LIKE '%07:__:%' THEN 'london'
+                               WHEN created_at LIKE '%12:__:%' THEN 'overlap'
+                               WHEN created_at LIKE '%13:__:%' THEN 'ny'
+                               ELSE 'other'
+                           END as session
+                    FROM signals
+                ) sess ON sess.id = t.signal_id
+                WHERE t.status = 'closed'
+                GROUP BY sess.session
+            """).fetchall()
+
+            return {row['session']: {
+                'total': row['total'],
+                'win_rate': (row['wins'] / row['total'] * 100) if row['total'] > 0 else 0,
+                'avg_profit': row['avg_profit'] or 0
+            } for row in rows}
+
+    def _get_current_streak(self) -> dict:
+        """Get current winning/losing streak."""
+        with self._get_connection() as conn:
+            rows = conn.execute("""
+                SELECT profit 
+                FROM trades 
+                WHERE status = 'closed' 
+                ORDER BY close_time DESC 
+                LIMIT 10
+            """).fetchall()
+
+            if not rows:
+                return {'type': 'none', 'count': 0}
+
+            streak_type = 'win' if rows[0]['profit'] > 0 else 'loss'
+            streak_count = 0
+
+            for row in rows:
+                if (streak_type == 'win' and row['profit'] > 0) or \
+                   (streak_type == 'loss' and row['profit'] <= 0):
+                    streak_count += 1
+                else:
+                    break
+
+            return {'type': streak_type, 'count': streak_count}
+
+    def _count_signals_today(self) -> int:
+        """Count signals generated today."""
+        today_start = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).isoformat()
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as count FROM signals WHERE created_at >= ?",
+                (today_start,)
+            ).fetchone()
+            return row['count'] if row else 0
+
+    def save_signal_outcome(self, signal_id: int, trade_id: Optional[int],
+                          actual_movement: float, tp_levels_hit: int = 0) -> None:
+        """Save signal outcome for performance tracking.
+
+        Args:
+            signal_id: Signal that generated prediction
+            trade_id: Associated trade (if executed)
+            actual_movement: Actual price movement in pips
+            tp_levels_hit: Number of TP levels achieved
+        """
+        with self._get_connection() as conn:
+            # Get signal details
+            signal = conn.execute(
+                "SELECT action, entry_price FROM signals WHERE id = ?",
+                (signal_id,)
+            ).fetchone()
+
+            if not signal:
+                return
+
+            # Calculate accuracy score
+            predicted_direction = signal['action']
+            accuracy = 1.0 if (
+                (predicted_direction == 'BUY' and actual_movement > 0) or
+                (predicted_direction == 'SELL' and actual_movement < 0)
+            ) else 0.0
+
+            # Save outcome
+            conn.execute(
+                """
+                INSERT INTO signal_outcomes (signal_id, trade_id, predicted_direction,
+                                           actual_movement, tp_levels_hit, accuracy_score)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (signal_id, trade_id, predicted_direction, actual_movement, 
+                 tp_levels_hit, accuracy)
+            )
+            conn.commit()
 
 
 # Lazy singleton

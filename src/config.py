@@ -93,13 +93,41 @@ class Settings(BaseSettings):
 
     # Confidence Thresholds
     confidence_threshold: int = Field(
-        default=60, ge=0, le=100, description="Minimum confidence to trade"
+        default=50, ge=0, le=100, description="Minimum confidence to trade"
     )
     confidence_full_position: int = Field(
         default=75, ge=0, le=100, description="Confidence for full position"
     )
     confidence_half_position: int = Field(
         default=60, ge=0, le=100, description="Confidence for half position"
+    )
+    
+    # Signal Filtering Parameters
+    direction_change_cooldown_minutes: int = Field(
+        default=30, ge=5, le=120, description="Cooldown before direction change"
+    )
+    direction_change_min_confidence: int = Field(
+        default=65, ge=50, le=100, description="Min confidence for direction reversal"
+    )
+    rapid_flip_threshold_minutes: int = Field(
+        default=30, ge=10, le=60, description="Time window to detect rapid flip-flop"
+    )
+    
+    # Market Regime Parameters
+    regime_trend_threshold_weak: int = Field(
+        default=20, ge=10, le=30, description="ADX threshold for weak trend"
+    )
+    regime_trend_threshold_strong: int = Field(
+        default=35, ge=30, le=50, description="ADX threshold for strong trend"
+    )
+    regime_volatility_low: int = Field(
+        default=20, ge=10, le=30, description="Percentile threshold for low volatility"
+    )
+    regime_volatility_high: int = Field(
+        default=80, ge=70, le=90, description="Percentile threshold for high volatility"
+    )
+    regime_volatility_extreme: int = Field(
+        default=95, ge=90, le=99, description="Percentile threshold for extreme volatility"
     )
 
     # Database Settings
@@ -196,6 +224,10 @@ class Settings(BaseSettings):
     recovery_mode_threshold: float = Field(
         default=5.0, ge=1.0, le=15.0,
         description="Drawdown % to trigger recovery mode (0.5x position)"
+    )
+    enable_drawdown_check: bool = Field(
+        default=True,
+        description="Enable/disable drawdown risk checks. Set False to bypass all drawdown limits."
     )
 
     @property
