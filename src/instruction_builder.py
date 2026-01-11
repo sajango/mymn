@@ -86,10 +86,33 @@ class InstructionBuilder:
         # Join with clear section separators
         assembled = "\n\n---\n\n".join(filter(None, parts))
 
-        token_estimate = len(assembled) // 4  # Rough token estimate
+        # Token count validation
+        token_estimate = self.estimate_tokens(assembled)
         logger.info(f"[INSTRUCTIONS] Assembled ~{token_estimate} tokens")
 
+        if token_estimate > 15000:
+            logger.warning(
+                f"[INSTRUCTIONS] Token count ({token_estimate}) exceeds 15K budget!"
+            )
+        elif token_estimate > 12000:
+            logger.info(f"[INSTRUCTIONS] Token count within target range (12-15K)")
+
         return assembled
+
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        """Estimate token count using character-based approximation.
+
+        Uses chars/4 approximation which is reasonably accurate for English text.
+        For more precise counting, consider using tiktoken library.
+
+        Args:
+            text: Text to estimate tokens for
+
+        Returns:
+            Estimated token count
+        """
+        return len(text) // 4
 
     def _select_regime_module(
         self,
@@ -115,18 +138,25 @@ class InstructionBuilder:
             if atr_percentile > 80:
                 return "regime/volatile.md"
 
-        # ADX-based selection
+        # Extract regime data
         adx = market_regime.get("adx", 25)
-        regime_type = market_regime.get("regime_type", "")
+        regime_type = market_regime.get("regime_type", "").lower()
 
-        if adx >= 25 or "strong" in regime_type.lower():
-            return "regime/trending-strong.md"
-        elif adx >= 15 or "weak" in regime_type.lower():
-            return "regime/trending-weak.md"
-        elif "ranging" in regime_type.lower() or adx < 15:
+        # Priority 1: Check explicit regime_type first (more specific than ADX)
+        if "ranging" in regime_type:
             return "regime/ranging.md"
-        else:
+        if "strong" in regime_type:
+            return "regime/trending-strong.md"
+        if "weak" in regime_type:
             return "regime/trending-weak.md"
+
+        # Priority 2: ADX-based selection when no explicit regime_type
+        if adx >= 25:
+            return "regime/trending-strong.md"
+        elif adx >= 15:
+            return "regime/trending-weak.md"
+        else:  # adx < 15
+            return "regime/ranging.md"
 
     def _select_wave_modules(self, signal_context: Optional[dict]) -> list:
         """Select relevant wave pattern modules based on context.
