@@ -1,7 +1,7 @@
 # MT5 Elliott Wave Trading System - Codebase Summary
 
-**Last Updated**: 2026-01-06
-**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation)
+**Last Updated**: 2026-01-11
+**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation) + Phase 1 Instruction Refactoring
 **Total Repository**: 182,047 tokens, 781,719 characters, 84 files (includes dashboard and tests)
 
 ## Quick Overview
@@ -120,6 +120,26 @@ Configuration (Phase 9 additions):
 - `key_level_proximity_min_pips` (default: 10.0)
 - `key_level_proximity_atr_multiplier` (default: 1.5)
 
+### Layer 6.5: Modular Instruction System (Phase 1 - NEW)
+```
+src/instructions/          - Elliott Wave instruction modules (Phase 1)
+├── core/
+│   ├── essential-rules.md     - Elliott Wave inviolable rules
+│   ├── confidence-scoring.md  - Confidence calculation system
+│   └── output-format.md       - JSON output specification
+├── regime/
+│   ├── trending-strong.md     - Strong trend guidance (ADX ≥25)
+│   ├── trending-weak.md       - Weak trend guidance (ADX 15-24)
+│   ├── ranging.md             - Range-bound guidance (ADX <15)
+│   └── volatile.md            - High volatility guidance (ATR >2x)
+
+Purpose: Modular instruction library for InstructionBuilder
+- Decouples signal rules from main system
+- Enables runtime instruction composition
+- Phase 1: Module structure + documentation
+- Phase 2: InstructionBuilder integration
+```
+
 ### Layer 7: Trade Execution & Management
 ```
 trade_executor.py  - Orchestrates signal processing and execution
@@ -235,6 +255,23 @@ Repeat trail logic
 | trailing_stop_manager.py | Stop loss management | test_trailing_stop.py (16 tests) |
 | telegram_bot.py | User interface | test_telegram.py |
 
+### Instruction Modules (src/instructions/ - Phase 1)
+| Directory | Purpose | Files |
+|-----------|---------|-------|
+| core/ | Essential rules and configuration | 3 MD files |
+| regime/ | Market regime-specific guidance | 4 MD files |
+
+**Core Modules**:
+- `essential-rules.md` - Elliott Wave inviolable rules
+- `confidence-scoring.md` - Confidence calculation system
+- `output-format.md` - JSON output specification
+
+**Regime Modules**:
+- `trending-strong.md` - Strong uptrend/downtrend guidance (ADX ≥25)
+- `trending-weak.md` - Weak trend guidance (ADX 15-24)
+- `ranging.md` - Range-bound market guidance (ADX <15)
+- `volatile.md` - High volatility guidance (ATR >2x normal)
+
 ### Test Coverage (Phase 7)
 ```
 Core Modules (91-100% coverage):
@@ -269,9 +306,17 @@ OVERALL:                  281/281 tests passing (100%)
 - **phase-05-trade-execution.md** - Trade execution ✅
 - **phase-06-orchestration.md** - System orchestration ✅
 - **phase-06.5-news-integration.md** - News filtering ✅
-- **phase-07-testing.md** - Testing and validation ✅ (current)
-- **phase-08-web-dashboard.md** - Web UI planning (next)
-- **phase-09-backtest-analytics.md** - Backtesting framework
+- **phase-07-testing.md** - Testing and validation ✅
+- **phase-08-web-dashboard.md** - Web UI planning ✅
+- **phase-09-backtest-analytics.md** - Backtesting framework ✅
+
+### Instruction Refactoring (Modular instruction_v4.md)
+- **Phase 1** - Module structure & documentation ✅ (complete)
+  - Created `src/instructions/core/` with 3 essential modules
+  - Created `src/instructions/regime/` with 4 market regime modules
+  - Documentation reflects new modular architecture
+- **Phase 2** - InstructionBuilder integration (pending)
+- **Phase 3-6** - Full system integration (pending)
 
 ## Key Design Patterns
 

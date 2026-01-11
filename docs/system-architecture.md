@@ -1,8 +1,8 @@
 # System Architecture - MT5 Elliott Wave Trading System
 
-**Last Updated**: 2026-01-08
-**Architecture Version**: 1.5
-**Current Phase**: Phase 3 (Drawdown Manager) + Phase 9 (RiskGuard Key Level Proximity Validation)
+**Last Updated**: 2026-01-11
+**Architecture Version**: 1.6
+**Current Phase**: Phase 3 (Drawdown Manager) + Phase 9 (RiskGuard Key Level Proximity Validation) + Phase 1 Instruction Refactoring
 
 ## Table of Contents
 
@@ -690,6 +690,62 @@ class MT5Client:
 - Configuration changes don't require code changes
 - Testable with different config values
 - Environment-specific settings via .env
+
+---
+
+## Modular Instruction System (Phase 1 - NEW)
+
+### Architecture Overview
+
+Elliott Wave instructions have been refactored into a modular system to enable:
+- Runtime composition of AI instructions
+- Decoupled signal rules from core trading logic
+- Reusable instruction library for InstructionBuilder
+
+### Directory Structure
+
+```
+src/instructions/
+├── core/
+│   ├── essential-rules.md       Elliott Wave fundamentals
+│   ├── confidence-scoring.md    Confidence calculation logic
+│   └── output-format.md         JSON output specifications
+├── regime/
+│   ├── trending-strong.md       ADX ≥25 (strong uptrend/downtrend)
+│   ├── trending-weak.md         ADX 15-24 (weak trend direction)
+│   ├── ranging.md               ADX <15 (consolidation/range)
+│   └── volatile.md              ATR >2x normal (high volatility)
+```
+
+### Module Purposes
+
+**Core Modules** (Essential):
+- `essential-rules.md` - Inviolable Elliott Wave rules
+- `confidence-scoring.md` - How confidence is calculated per signal
+- `output-format.md` - Expected JSON structure from Claude AI
+
+**Regime Modules** (Context-Specific):
+- `trending-strong.md` - Wave pattern guidance in strong trends
+- `trending-weak.md` - Wave pattern guidance in weak trends
+- `ranging.md` - Wave pattern guidance in range-bound markets
+- `volatile.md` - Risk management in high volatility
+
+### Phase Roadmap
+
+- **Phase 1** ✅ - Module structure & documentation (COMPLETE)
+  - Directory structure created
+  - Module content documented
+  - Integration tracked in codebase-summary.md
+
+- **Phase 2** (pending) - InstructionBuilder integration
+  - Build instruction loader from modules
+  - Runtime instruction composition
+  - Cache management
+
+- **Phase 3-6** (pending) - Full system integration
+  - Claude client uses modular instructions
+  - Signal parser validates against loaded modules
+  - Configuration-driven instruction selection
 
 ---
 
