@@ -19,6 +19,7 @@ from src.config import get_settings
 from src.database import Database, get_database
 from src.mt5_client import MT5Client, mt5_client
 from src.signal_parser import TradingSignal
+from src.adaptive_confidence import AdaptiveConfidenceManager, get_adaptive_confidence_manager
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class RiskCheckReason(str, Enum):
     DRAWDOWN_LIMIT_EXCEEDED = "drawdown_limit_exceeded"
     PORTFOLIO_HEAT_EXCEEDED = "portfolio_heat_exceeded"
     CORRELATION_RISK_HIGH = "correlation_risk_high"
+    LOW_CONFIDENCE = "low_confidence"
 
 
 @dataclass
@@ -76,11 +78,13 @@ class RiskGuard:
         db: Optional[Database] = None,
         settings=None,
         drawdown_manager=None,
+        adaptive_manager: Optional[AdaptiveConfidenceManager] = None,
     ):
         self._mt5 = mt5
         self._db = db
         self._settings = settings
         self._drawdown_manager = drawdown_manager
+        self._adaptive_manager = adaptive_manager
         # In-memory hash cache as fallback
         self._hash_cache: set[str] = set()
 
@@ -112,6 +116,13 @@ class RiskGuard:
             from src.drawdown_manager import get_drawdown_manager
             self._drawdown_manager = get_drawdown_manager()
         return self._drawdown_manager
+
+    @property
+    def adaptive_manager(self) -> AdaptiveConfidenceManager:
+        """Lazy load adaptive confidence manager."""
+        if self._adaptive_manager is None:
+            self._adaptive_manager = get_adaptive_confidence_manager()
+        return self._adaptive_manager
 
     async def validate(self, signal: TradingSignal) -> RiskCheckResult:
         """Run all risk checks on signal.
@@ -156,6 +167,36 @@ class RiskGuard:
         elif not self.config.enable_drawdown_check:
             logger.warning("[RiskGuard] SKIPPED: drawdown_check (disabled in config)")
 
+        # Check adaptive confidence threshold (early exit if confidence too low)
+        adaptive_modifier = 1.0
+        if self.config.adaptive_threshold_enabled:
+            thresholds = self.adaptive_manager.get_adjusted_thresholds()
+            signal_confidence = signal.signal.confidence or 0
+
+            if signal_confidence < thresholds.entry_minimum:
+                logger.warning(
+                    f"[RiskGuard] FAILED: adaptive_confidence - "
+                    f"confidence {signal_confidence} < threshold {thresholds.entry_minimum}"
+                )
+                return RiskCheckResult(
+                    passed=False,
+                    reason=RiskCheckReason.LOW_CONFIDENCE,
+                    message=f"Confidence {signal_confidence}% below adaptive threshold {thresholds.entry_minimum}%",
+                )
+
+            # Apply adaptive position modifier
+            adaptive_modifier = thresholds.position_modifier
+            logger.info(
+                f"[RiskGuard] PASSED: adaptive_confidence "
+                f"(conf={signal_confidence}, min={thresholds.entry_minimum}, "
+                f"modifier={adaptive_modifier:.2f})"
+            )
+        else:
+            logger.debug("[RiskGuard] SKIPPED: adaptive_confidence (disabled)")
+
+        # Combine modifiers: drawdown × adaptive
+        combined_modifier = position_modifier * adaptive_modifier
+
         # Run checks in order of importance
         checks = [
             ("duplicate", self._check_duplicate),
@@ -176,7 +217,7 @@ class RiskGuard:
             logger.info(f"[RiskGuard] PASSED: {check_name}")
 
         logger.info("[RiskGuard] All checks passed")
-        return RiskCheckResult(passed=True, position_size_modifier=position_modifier)
+        return RiskCheckResult(passed=True, position_size_modifier=combined_modifier)
 
     def _generate_signal_hash(self, signal: TradingSignal) -> str:
         """Generate hash from signal content for deduplication.

@@ -211,6 +211,23 @@ class Settings(BaseSettings):
         description="Minutes threshold for rapid flip-flop detection"
     )
 
+    # Adaptive Confidence Threshold Settings (Phase 2 Feedback Loop)
+    adaptive_threshold_enabled: bool = Field(
+        default=True, description="Enable adaptive confidence thresholds"
+    )
+    adaptive_cache_ttl_minutes: int = Field(
+        default=60, ge=10, le=1440, description="Cache TTL in minutes before recalculation"
+    )
+    adaptive_min_trades: int = Field(
+        default=50, ge=20, le=200, description="Minimum trades required for adaptive thresholds"
+    )
+    adaptive_cross_validation_ratio: float = Field(
+        default=0.8, ge=0.6, le=0.9, description="Train ratio for cross-validation (test = 1 - ratio)"
+    )
+    adaptive_invalidation_trades: int = Field(
+        default=50, ge=10, le=100, description="New trades to trigger cache invalidation"
+    )
+
     # Drawdown Manager Settings (instruction_v4 Section 8.7)
     daily_max_loss_percent: float = Field(
         default=3.0, ge=0.5, le=10.0,

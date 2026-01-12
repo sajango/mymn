@@ -1,8 +1,12 @@
 """Tests for RiskGuard module."""
 
+import sys
 from unittest.mock import MagicMock
 
 import pytest
+
+# Mock MetaTrader5 before any imports that might need it
+sys.modules['MetaTrader5'] = MagicMock()
 
 from src.database import Database
 from src.risk_guard import (
