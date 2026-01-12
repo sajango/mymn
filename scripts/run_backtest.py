@@ -7,7 +7,7 @@ Usage:
     python scripts/run_backtest.py --help
 
 Examples:
-    # Run with defaults
+    # Run with defaults (auto-exports from MT5 if data missing)
     python scripts/run_backtest.py
 
     # Custom confidence threshold
@@ -18,6 +18,15 @@ Examples:
 
     # Date range filter
     python scripts/run_backtest.py --start 2025-01-01 --end 2025-12-31
+
+    # Export more bars (default: 10000)
+    python scripts/run_backtest.py --bars 20000
+
+    # Disable auto-export (fail if data missing)
+    python scripts/run_backtest.py --no-auto-export
+
+Note:
+    Auto-export requires MT5 terminal to be running and logged in.
 """
 
 import argparse
@@ -34,6 +43,7 @@ from src.backtest_engine import (
     BacktestConfig,
     BacktestEngine,
     RuleBasedSignalGenerator,
+    export_historical_data,
 )
 
 # Configure logging
@@ -144,6 +154,25 @@ Examples:
         help="Enable debug logging",
     )
 
+    # Auto-export settings
+    parser.add_argument(
+        "--auto-export",
+        action="store_true",
+        default=True,
+        help="Auto-export data from MT5 if missing (default: True)",
+    )
+    parser.add_argument(
+        "--no-auto-export",
+        action="store_true",
+        help="Disable auto-export, fail if data missing",
+    )
+    parser.add_argument(
+        "--bars",
+        type=int,
+        default=10000,
+        help="Number of bars to export per timeframe (default: 10000)",
+    )
+
     return parser.parse_args()
 
 
@@ -162,18 +191,54 @@ def main() -> int:
     elif args.quiet:
         logging.getLogger().setLevel(logging.WARNING)
 
-    # Validate data path
-    if not args.data_path.exists():
-        logger.error("Data path does not exist: %s", args.data_path)
-        logger.info("Please export historical data first using:")
-        logger.info("  from src.backtest_engine import export_historical_data")
-        logger.info("  export_historical_data()")
-        return 1
+    # Determine if auto-export is enabled
+    auto_export = args.auto_export and not args.no_auto_export
 
-    # Check for CSV files
+    # Validate data path and auto-export if needed
+    need_export = False
+    if not args.data_path.exists():
+        if auto_export:
+            logger.info("Data path does not exist, will auto-export from MT5")
+            need_export = True
+        else:
+            logger.error("Data path does not exist: %s", args.data_path)
+            logger.info("Use --auto-export or export data manually")
+            return 1
+    else:
+        # Check for CSV files
+        csv_files = list(args.data_path.glob(f"{args.symbol}_*.csv"))
+        if not csv_files:
+            if auto_export:
+                logger.info("No CSV files found for %s, will auto-export from MT5", args.symbol)
+                need_export = True
+            else:
+                logger.error("No CSV files found for %s in %s", args.symbol, args.data_path)
+                logger.info("Use --auto-export or export data manually")
+                return 1
+
+    # Auto-export data from MT5
+    if need_export:
+        logger.info("Exporting data from MT5 (requires MT5 terminal running)...")
+        logger.info("  Symbol: %s", args.symbol)
+        logger.info("  Bars: %d per timeframe", args.bars)
+        try:
+            exported = export_historical_data(
+                symbol=args.symbol,
+                bars=args.bars,
+                output_path=args.data_path,
+            )
+            logger.info("Exported %d timeframes:", len(exported))
+            for tf, path in exported.items():
+                logger.info("  %s: %s", tf, path)
+        except Exception as e:
+            logger.error("Failed to export data from MT5: %s", e)
+            logger.info("Make sure MT5 terminal is running and logged in")
+            return 1
+
+    # Verify CSV files exist after potential export
     csv_files = list(args.data_path.glob(f"{args.symbol}_*.csv"))
     if not csv_files:
-        logger.error("No CSV files found for %s in %s", args.symbol, args.data_path)
+        logger.error("No CSV files found for %s after export", args.symbol)
         return 1
 
     logger.info("Found %d data files for %s", len(csv_files), args.symbol)
