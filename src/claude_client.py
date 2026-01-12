@@ -122,7 +122,7 @@ class ClaudeClient:
         instructions_path: Optional[Path] = None,
         timeout: Optional[int] = None,
         max_retries: int = 1,
-        use_dynamic_instructions: bool = True,
+        use_dynamic_instructions: Optional[bool] = None,
     ):
         """Initialize Claude client.
 
@@ -130,14 +130,23 @@ class ClaudeClient:
             instructions_path: Path to instructions markdown file (fallback)
             timeout: CLI timeout in seconds (default from config)
             max_retries: Max retry attempts on failure
-            use_dynamic_instructions: Use InstructionBuilder for modular assembly
+            use_dynamic_instructions: Use InstructionBuilder for modular assembly.
+                If None, reads from config.use_modular_instructions.
         """
         self._config = None
         self._instructions_path = instructions_path
         self._timeout = timeout
         self.max_retries = max_retries
         self._db = None
-        self.use_dynamic_instructions = use_dynamic_instructions
+
+        # Read from config if not explicitly provided
+        if use_dynamic_instructions is None:
+            try:
+                self.use_dynamic_instructions = get_settings().use_modular_instructions
+            except Exception:
+                self.use_dynamic_instructions = True  # fallback default
+        else:
+            self.use_dynamic_instructions = use_dynamic_instructions
 
     def set_database(self, db) -> None:
         """Set database reference for signal context retrieval.
