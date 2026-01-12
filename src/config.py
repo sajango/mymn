@@ -118,7 +118,7 @@ class Settings(BaseSettings):
         default=True, description="Use InstructionBuilder for dynamic instruction assembly"
     )
     instruction_token_budget: int = Field(
-        default=15000, ge=8000, le=25000, description="Maximum token budget for assembled instructions"
+        default=25000, ge=8000, le=25000, description="Maximum token budget for assembled instructions"
     )
     instruction_fallback_enabled: bool = Field(
         default=True, description="Fall back to instruction_v4.md if modular assembly fails"

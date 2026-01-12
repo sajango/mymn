@@ -74,6 +74,47 @@ def _log_csv_file_info(tf: str, path: Path) -> dict:
 
     return info
 
+
+def _extract_current_prices(csv_files: dict[str, Path]) -> dict:
+    """Extract current price info from CSV files for prompt anchoring.
+
+    Args:
+        csv_files: Dict mapping timeframe to CSV file path
+
+    Returns:
+        Dict with current price info: {latest_close, latest_high, latest_low, timestamp, timeframe}
+    """
+    # Priority order: smallest timeframe first for most recent price
+    priority_order = ["M15", "M30", "H1", "H4"]
+
+    for tf in priority_order:
+        if tf not in csv_files or not csv_files[tf].exists():
+            continue
+
+        try:
+            with open(csv_files[tf], "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                next(reader, None)  # Skip header
+                rows = list(reader)
+
+                if rows:
+                    last_row = rows[-1]
+                    # CSV format: datetime, open, high, low, close, ...
+                    return {
+                        "timestamp": last_row[0],
+                        "open": float(last_row[1]),
+                        "high": float(last_row[2]),
+                        "low": float(last_row[3]),
+                        "close": float(last_row[4]),
+                        "timeframe": tf,
+                    }
+        except (IndexError, ValueError, IOError) as e:
+            logger.warning(f"[PRICE] Failed to extract price from {tf}: {e}")
+            continue
+
+    return {}
+
+
 # Default paths - v4 primary, v2 fallback
 DEFAULT_INSTRUCTIONS_V4_PATH = Path(__file__).parent.parent / "instructions_v4.md"
 DEFAULT_INSTRUCTIONS_V2_PATH = Path(__file__).parent.parent / "instructions_v2.md"
@@ -261,8 +302,11 @@ class ClaudeClient:
             "",
         ]
 
-        # Add enhanced signal context if available
-        if signal_context:
+        # Add enhanced signal context if available (with defensive checks for required keys)
+        required_signal_keys = ['last_action', 'last_confidence', 'last_time', 'minutes_since_last', 'recent_sequence']
+        has_signal_context = signal_context and all(key in signal_context for key in required_signal_keys)
+
+        if has_signal_context:
             prompt_parts.extend([
                 "## PREVIOUS ANALYSIS CONTEXT",
                 "",
@@ -331,6 +375,20 @@ class ClaudeClient:
 
             prompt_parts.append("---")
             prompt_parts.append("")
+        elif signal_context:
+            # Performance context only (no signal history) - still include performance metrics
+            if signal_context.get("session_performance"):
+                prompt_parts.extend([
+                    "## PERFORMANCE CONTEXT",
+                    "",
+                ])
+                perf = signal_context["session_performance"]
+                best_session = max(perf.items(), key=lambda x: x[1].get('win_rate', 0) if x[1].get('total', 0) > 2 else 0)
+                if best_session[1].get('total', 0) > 2:
+                    prompt_parts.append(
+                        f"**Best Session:** {best_session[0]} with {best_session[1]['win_rate']:.0f}% win rate"
+                    )
+                prompt_parts.extend(["", "---", ""])
 
         # Add market regime information if available
         if market_regime:
@@ -397,6 +455,24 @@ class ClaudeClient:
                 
             prompt_parts.append("---")
             prompt_parts.append("")
+
+        # Extract and inject current price for model anchoring (prevents hallucination)
+        current_price = _extract_current_prices(csv_files)
+        if current_price:
+            prompt_parts.extend([
+                "## CURRENT PRICE ANCHOR (CRITICAL)",
+                "",
+                f"**XAUUSD Current Price:** {current_price['close']:.2f}",
+                f"**Latest Bar:** O={current_price['open']:.2f} H={current_price['high']:.2f} "
+                f"L={current_price['low']:.2f} C={current_price['close']:.2f}",
+                f"**Timestamp:** {current_price['timestamp']} ({current_price['timeframe']})",
+                "",
+                "⚠️ MANDATORY: Entry, SL, TP prices MUST be within ±5% of current price.",
+                f"   Valid range: {current_price['close'] * 0.95:.2f} - {current_price['close'] * 1.05:.2f}",
+                "",
+                "---",
+                "",
+            ])
 
         prompt_parts.append("STEP 1: Read these CSV files using the Read tool:")
 
