@@ -237,6 +237,26 @@ class Settings(BaseSettings):
         default=10, ge=5, le=50, description="Min trades before applying modifier"
     )
 
+    # Factor Weight Settings (Phase 03 - Factor Weight Auto-Adjustment)
+    factor_weight_enabled: bool = Field(
+        default=True, description="Enable dynamic factor weight adjustment"
+    )
+    factor_weight_min: float = Field(
+        default=0.05, ge=0.01, le=0.20, description="Minimum factor weight floor"
+    )
+    factor_weight_max: float = Field(
+        default=0.40, ge=0.20, le=0.60, description="Maximum factor weight cap"
+    )
+    factor_weight_recalibrate_trades: int = Field(
+        default=50, ge=20, le=200, description="Trade count trigger for recalibration"
+    )
+    factor_significance_threshold: float = Field(
+        default=0.10, ge=0.05, le=0.30, description="Min correlation for significance"
+    )
+    factor_weight_cache_ttl_hours: int = Field(
+        default=24, ge=1, le=168, description="Cache TTL in hours before recalculation"
+    )
+
     # Drawdown Manager Settings (instruction_v4 Section 8.7)
     daily_max_loss_percent: float = Field(
         default=3.0, ge=0.5, le=10.0,

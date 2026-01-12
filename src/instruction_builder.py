@@ -307,11 +307,39 @@ class InstructionBuilder:
         for key, value in replacements.items():
             template = template.replace(key, value)
 
+        # Inject factor weights from FactorWeightManager
+        template = self._inject_factor_weights(template)
+
         # Validate no unreplaced placeholders remain
         if "{{" in template and "}}" in template:
             logger.warning("[INSTRUCTIONS] Some placeholders not replaced in performance template")
 
         return template
+
+    def _inject_factor_weights(self, template: str) -> str:
+        """Inject factor weight guidance into template.
+
+        Args:
+            template: Template string with {{FACTOR_WEIGHTS}} placeholder
+
+        Returns:
+            Template with factor weights injected
+        """
+        if "{{FACTOR_WEIGHTS}}" not in template:
+            return template
+
+        try:
+            from src.factor_weight_manager import get_factor_weight_manager
+
+            manager = get_factor_weight_manager()
+            factor_guidance = manager.get_factor_guidance(days=30)
+            return template.replace("{{FACTOR_WEIGHTS}}", factor_guidance)
+        except Exception as e:
+            logger.warning(f"[INSTRUCTIONS] Factor weight injection failed: {e}")
+            return template.replace(
+                "{{FACTOR_WEIGHTS}}",
+                "Factor weight data unavailable (insufficient trades or calculation error)"
+            )
 
     def _win_rate_comment(self, win_rate: Optional[float]) -> str:
         """Generate comment based on win rate.

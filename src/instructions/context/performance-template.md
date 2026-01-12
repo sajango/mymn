@@ -32,6 +32,10 @@ Based on historical performance:
 
 {{STREAK_WARNING}}
 
+## Factor Priority Guidance (Data-Driven)
+
+{{FACTOR_WEIGHTS}}
+
 ## Trading Adjustments
 
 Based on performance data, apply these rules:
