@@ -101,18 +101,7 @@ class Settings(BaseSettings):
     confidence_half_position: int = Field(
         default=60, ge=0, le=100, description="Confidence for half position"
     )
-    
-    # Signal Filtering Parameters
-    direction_change_cooldown_minutes: int = Field(
-        default=30, ge=5, le=120, description="Cooldown before direction change"
-    )
-    direction_change_min_confidence: int = Field(
-        default=65, ge=50, le=100, description="Min confidence for direction reversal"
-    )
-    rapid_flip_threshold_minutes: int = Field(
-        default=30, ge=10, le=60, description="Time window to detect rapid flip-flop"
-    )
-    
+
     # Instruction System Settings
     use_modular_instructions: bool = Field(
         default=True, description="Use InstructionBuilder for dynamic instruction assembly"
@@ -226,6 +215,26 @@ class Settings(BaseSettings):
     )
     adaptive_invalidation_trades: int = Field(
         default=50, ge=10, le=100, description="New trades to trigger cache invalidation"
+    )
+
+    # Session/Wave Modifier Settings (Phase 02 - Session/Wave Performance Modifiers)
+    adaptive_modifiers_enabled: bool = Field(
+        default=True, description="Enable session/wave confidence modifiers"
+    )
+    session_modifier_max: int = Field(
+        default=15, ge=0, le=30, description="Maximum session confidence boost"
+    )
+    session_modifier_min: int = Field(
+        default=-20, ge=-30, le=0, description="Maximum session confidence penalty"
+    )
+    wave_modifier_max: int = Field(
+        default=15, ge=0, le=30, description="Maximum wave confidence boost"
+    )
+    wave_modifier_min: int = Field(
+        default=-20, ge=-30, le=0, description="Maximum wave confidence penalty"
+    )
+    modifier_min_sample_size: int = Field(
+        default=10, ge=5, le=50, description="Min trades before applying modifier"
     )
 
     # Drawdown Manager Settings (instruction_v4 Section 8.7)

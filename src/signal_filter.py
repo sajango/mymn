@@ -5,6 +5,8 @@ Applies hysteresis logic:
 - Direction reversals: require cooldown + higher confidence
 
 Integrates with RiskGuard as additional validation layer.
+
+Phase 02 Enhancement: Applies session/wave confidence modifiers before validation.
 """
 
 import logging
@@ -16,6 +18,7 @@ from typing import Optional
 from src.config import get_settings
 from src.database import Database, get_database
 from src.signal_parser import TradingSignal
+from src.adaptive_confidence import get_adaptive_confidence_manager
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,9 @@ class FilterResult:
     message: str = ""
     previous_action: Optional[str] = None
     minutes_since_last: Optional[int] = None
+    adjusted_confidence: Optional[int] = None  # Phase 02: Adjusted confidence after modifiers
+    original_confidence: Optional[int] = None  # Phase 02: Original confidence before modifiers
+    modifier_applied: int = 0  # Phase 02: Total modifier applied
 
 
 class SignalConsistencyFilter:
@@ -89,6 +95,9 @@ class SignalConsistencyFilter:
     def check(self, signal: TradingSignal) -> FilterResult:
         """Check if signal passes consistency filter.
 
+        Applies session/wave confidence modifiers before validation
+        when adaptive_modifiers_enabled is True.
+
         Args:
             signal: Trading signal to validate
 
@@ -99,12 +108,63 @@ class SignalConsistencyFilter:
         if not signal.is_tradeable:
             return FilterResult(passed=True, message="not_tradeable_skip")
 
+        # Phase 02: Apply session/wave modifiers to confidence
+        original_confidence = signal.signal.confidence
+        adjusted_confidence = original_confidence
+        modifier_applied = 0
+
+        settings = get_settings()
+        if getattr(settings, 'adaptive_modifiers_enabled', True):
+            try:
+                adaptive_manager = get_adaptive_confidence_manager()
+
+                # Extract session/wave/regime from signal
+                session = None
+                wave = None
+                regime = None
+
+                if signal.session_context:
+                    session = signal.session_context.current_session
+                if signal.wave_analysis:
+                    wave = signal.wave_analysis.wave_position or signal.wave_analysis.current_wave
+                if signal.market_regime:
+                    regime = signal.market_regime.classification
+
+                # Get modifiers
+                modifiers = adaptive_manager.get_session_wave_modifiers(
+                    session=session,
+                    wave=wave,
+                    regime=regime
+                )
+
+                modifier_applied = modifiers.combined_modifier
+                adjusted_confidence = max(0, min(100, original_confidence + modifier_applied))
+
+                if modifier_applied != 0:
+                    logger.info(
+                        f"[SignalFilter] Confidence adjusted: {original_confidence} + {modifier_applied} = "
+                        f"{adjusted_confidence} (session={session}, wave={wave}, regime={regime})"
+                    )
+
+                # Update signal confidence for downstream validation
+                signal.signal.confidence = adjusted_confidence
+
+            except Exception as e:
+                logger.warning(f"[SignalFilter] Failed to apply modifiers: {e}")
+                # Continue with original confidence on error
+
         # Get recent tradeable signals
         recent = self._get_recent_tradeable_signals(limit=5)
 
         if not recent:
             logger.info("[SignalFilter] No recent signals, allowing")
-            return FilterResult(passed=True, message="no_history")
+            return FilterResult(
+                passed=True,
+                message="no_history",
+                adjusted_confidence=adjusted_confidence,
+                original_confidence=original_confidence,
+                modifier_applied=modifier_applied,
+            )
 
         last_signal = recent[0]
         last_action = last_signal["action"]
@@ -117,6 +177,9 @@ class SignalConsistencyFilter:
                 passed=True,
                 message="same_direction",
                 previous_action=last_action,
+                adjusted_confidence=adjusted_confidence,
+                original_confidence=original_confidence,
+                modifier_applied=modifier_applied,
             )
 
         # Direction reversal - apply hysteresis
@@ -142,9 +205,12 @@ class SignalConsistencyFilter:
                 ),
                 previous_action=last_action,
                 minutes_since_last=minutes_since,
+                adjusted_confidence=adjusted_confidence,
+                original_confidence=original_confidence,
+                modifier_applied=modifier_applied,
             )
 
-        # Check confidence for reversal
+        # Check confidence for reversal (uses adjusted confidence)
         confidence = signal.signal.confidence
         if confidence < self.direction_change_min_confidence:
             logger.warning(
@@ -160,6 +226,9 @@ class SignalConsistencyFilter:
                 ),
                 previous_action=last_action,
                 minutes_since_last=minutes_since,
+                adjusted_confidence=adjusted_confidence,
+                original_confidence=original_confidence,
+                modifier_applied=modifier_applied,
             )
 
         # Check for rapid flip-flop pattern
@@ -171,6 +240,9 @@ class SignalConsistencyFilter:
                 message="Rapid flip-flop pattern detected in recent signals",
                 previous_action=last_action,
                 minutes_since_last=minutes_since,
+                adjusted_confidence=adjusted_confidence,
+                original_confidence=original_confidence,
+                modifier_applied=modifier_applied,
             )
 
         # Reversal approved
@@ -183,6 +255,9 @@ class SignalConsistencyFilter:
             message="reversal_approved",
             previous_action=last_action,
             minutes_since_last=minutes_since,
+            adjusted_confidence=adjusted_confidence,
+            original_confidence=original_confidence,
+            modifier_applied=modifier_applied,
         )
 
     def _get_recent_tradeable_signals(self, limit: int = 5) -> list[dict]:

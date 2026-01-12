@@ -23,6 +23,40 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class SessionWaveModifiers:
+    """Session/wave-specific confidence modifiers.
+
+    Attributes:
+        session_modifier: Modifier based on session win rate (-20 to +15)
+        wave_modifier: Modifier based on wave position win rate (-20 to +15)
+        regime_modifier: Modifier based on market regime (-15 to +10)
+        combined_modifier: Sum of all modifiers (clamped -30 to +25)
+        session_sample_size: Number of trades in session bucket
+        wave_sample_size: Number of trades in wave bucket
+        calculated_at: Timestamp of calculation
+    """
+
+    session_modifier: int = 0
+    wave_modifier: int = 0
+    regime_modifier: int = 0
+    combined_modifier: int = 0
+    session_sample_size: int = 0
+    wave_sample_size: int = 0
+    calculated_at: datetime = field(default_factory=datetime.utcnow)
+
+    def __post_init__(self):
+        """Validate and clamp modifier bounds."""
+        # Clamp individual modifiers
+        self.session_modifier = max(-20, min(15, self.session_modifier))
+        self.wave_modifier = max(-20, min(15, self.wave_modifier))
+        self.regime_modifier = max(-15, min(10, self.regime_modifier))
+
+        # Recalculate combined modifier with clamping
+        raw_combined = self.session_modifier + self.wave_modifier + self.regime_modifier
+        self.combined_modifier = max(-30, min(25, raw_combined))
+
+
+@dataclass
 class AdaptiveThresholds:
     """Dynamic thresholds calculated from rolling trade performance.
 
@@ -454,6 +488,155 @@ class AdaptiveConfidenceManager:
             f"test_exp={test_expectancy:.3f}, test_win_rate={test_win_rate*100:.1f}%"
         )
         return True
+
+    def get_session_wave_modifiers(
+        self, session: Optional[str], wave: Optional[str], regime: Optional[str], days: int = 30
+    ) -> SessionWaveModifiers:
+        """Get session/wave/regime-specific confidence modifiers.
+
+        Calculates modifiers based on historical win rates for each category.
+        Requires minimum sample size before applying non-zero modifiers.
+
+        Args:
+            session: Trading session (e.g., 'london', 'new_york', 'asian')
+            wave: Wave position (e.g., 'wave_3', 'wave_5')
+            regime: Market regime (e.g., 'trending', 'ranging')
+            days: Lookback period for analysis
+
+        Returns:
+            SessionWaveModifiers with calculated modifiers
+        """
+        # Check if modifiers are enabled
+        if not getattr(self.config, 'adaptive_modifiers_enabled', True):
+            logger.debug("[SessionWaveModifiers] Disabled, returning zero modifiers")
+            return SessionWaveModifiers()
+
+        min_sample = getattr(self.config, 'modifier_min_sample_size', 10)
+
+        # Get session stats
+        session_stats = self.calibration_analyzer.analyze_by_session(days)
+        session_modifier = 0
+        session_sample = 0
+        if session and session.lower() in session_stats:
+            stats = session_stats[session.lower()]
+            session_sample = stats.get('total', 0)
+            if session_sample >= min_sample:
+                session_modifier = self._calculate_session_modifier(stats.get('win_rate', 50))
+                logger.debug(
+                    f"[SessionWaveModifiers] Session '{session}': "
+                    f"win_rate={stats.get('win_rate')}%, modifier={session_modifier}"
+                )
+
+        # Get wave stats
+        wave_stats = self.calibration_analyzer.analyze_by_wave(days)
+        wave_modifier = 0
+        wave_sample = 0
+        if wave and wave.lower() in wave_stats:
+            stats = wave_stats[wave.lower()]
+            wave_sample = stats.get('total', 0)
+            if wave_sample >= min_sample:
+                wave_modifier = self._calculate_wave_modifier(stats.get('win_rate', 50))
+                logger.debug(
+                    f"[SessionWaveModifiers] Wave '{wave}': "
+                    f"win_rate={stats.get('win_rate')}%, modifier={wave_modifier}"
+                )
+
+        # Get regime stats
+        regime_stats = self.calibration_analyzer.analyze_by_regime(days)
+        regime_modifier = 0
+        if regime and regime.lower() in regime_stats:
+            stats = regime_stats[regime.lower()]
+            if stats.get('total', 0) >= min_sample:
+                regime_modifier = self._calculate_regime_modifier(stats.get('win_rate', 50))
+                logger.debug(
+                    f"[SessionWaveModifiers] Regime '{regime}': "
+                    f"win_rate={stats.get('win_rate')}%, modifier={regime_modifier}"
+                )
+
+        modifiers = SessionWaveModifiers(
+            session_modifier=session_modifier,
+            wave_modifier=wave_modifier,
+            regime_modifier=regime_modifier,
+            session_sample_size=session_sample,
+            wave_sample_size=wave_sample,
+        )
+
+        logger.info(
+            f"[SessionWaveModifiers] Combined modifier: {modifiers.combined_modifier} "
+            f"(session={session_modifier}, wave={wave_modifier}, regime={regime_modifier})"
+        )
+
+        return modifiers
+
+    def _calculate_session_modifier(self, win_rate: float) -> int:
+        """Calculate session-based confidence modifier.
+
+        Win rate > 65%: +10% (high-performance session)
+        Win rate 55-65%: +5% (above average)
+        Win rate 45-55%: 0% (neutral)
+        Win rate 35-45%: -10% (below average)
+        Win rate < 35%: -15% (poor session)
+
+        Args:
+            win_rate: Win rate percentage
+
+        Returns:
+            Modifier integer
+        """
+        if win_rate > 65:
+            return 10
+        elif win_rate > 55:
+            return 5
+        elif win_rate > 45:
+            return 0
+        elif win_rate > 35:
+            return -10
+        else:
+            return -15
+
+    def _calculate_wave_modifier(self, win_rate: float) -> int:
+        """Calculate wave-based confidence modifier.
+
+        Uses same buckets as session modifier for consistency.
+
+        Args:
+            win_rate: Win rate percentage
+
+        Returns:
+            Modifier integer
+        """
+        if win_rate > 65:
+            return 10
+        elif win_rate > 55:
+            return 5
+        elif win_rate > 45:
+            return 0
+        elif win_rate > 35:
+            return -10
+        else:
+            return -15
+
+    def _calculate_regime_modifier(self, win_rate: float) -> int:
+        """Calculate regime-based confidence modifier.
+
+        Regime modifier is more conservative (-15 to +10 range).
+
+        Args:
+            win_rate: Win rate percentage
+
+        Returns:
+            Modifier integer
+        """
+        if win_rate > 65:
+            return 10
+        elif win_rate > 55:
+            return 5
+        elif win_rate > 45:
+            return 0
+        elif win_rate > 35:
+            return -10
+        else:
+            return -15
 
     def check_performance_degradation(self, days: int = 7) -> Dict[str, Any]:
         """Check for recent performance degradation.
