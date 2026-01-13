@@ -522,6 +522,7 @@ class TestIntegration:
                 data={"session": 1, "index": i},
                 confidence=0.5,
             ))
+        store1.flush()  # Ensure all events persisted before session 2
 
         # Session 2: Store more events
         store2 = EventStore(db_path=temp_db_path, batch_size=1)
