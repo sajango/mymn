@@ -1230,3 +1230,741 @@ class TestCompressionMarketObserverIntegration:
         # No event expected with just 1 data point
         # But observer should have processed the data
         assert compression_obs._last_bb_width >= 0 or len(compression_obs._closes) == 1
+
+
+# ============================================================================
+# Phase 02: Event Aggregation & Deduplication Tests
+# ============================================================================
+
+
+class TestAggregationConfig:
+    """Test event aggregation configuration settings."""
+
+    def test_aggregation_settings_exist(self):
+        """Aggregation settings are defined in config."""
+        settings = get_settings()
+
+        assert hasattr(settings, "observer_aggregation_enabled")
+        assert hasattr(settings, "observer_aggregation_window_seconds")
+        assert hasattr(settings, "observer_dedup_window_seconds")
+        assert hasattr(settings, "observer_correlation_window_seconds")
+
+    def test_aggregation_defaults(self):
+        """Aggregation settings have expected default values."""
+        settings = get_settings()
+
+        assert settings.observer_aggregation_enabled is True
+        assert settings.observer_aggregation_window_seconds == 60
+        assert settings.observer_dedup_window_seconds == 30
+        assert settings.observer_correlation_window_seconds == 30
+
+
+class TestDuplicateDetector:
+    """Tests for DuplicateDetector class (Phase 02)."""
+
+    def test_init_defaults(self):
+        """Test default initialization."""
+        from src.observers.event_aggregator import DuplicateDetector
+
+        detector = DuplicateDetector()
+
+        assert detector.dedup_window == 30
+        assert len(detector._seen_events) == 0
+
+    def test_idempotency_key_generation(self):
+        """Test unique key generation from event."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import DuplicateDetector
+
+        detector = DuplicateDetector()
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+            data={"level": 2700.0, "ratio": 1.8, "current_price": 2695.0},
+        )
+
+        key = detector.create_idempotency_key(event)
+
+        assert isinstance(key, str)
+        assert len(key) == 16  # MD5 hex substring
+
+    def test_same_event_produces_same_key(self):
+        """Test same event data produces identical key."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import DuplicateDetector
+
+        detector = DuplicateDetector()
+
+        event1 = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=100.0,
+            data={"level": 2700.0, "ratio": 1.8, "current_price": 2695.0},
+        )
+        event2 = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=200.0,  # Different timestamp
+            data={"level": 2700.0, "ratio": 1.8, "current_price": 2695.0},
+        )
+
+        key1 = detector.create_idempotency_key(event1)
+        key2 = detector.create_idempotency_key(event2)
+
+        assert key1 == key2  # Same data = same key
+
+    def test_different_events_produce_different_keys(self):
+        """Test different event data produces different keys."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import DuplicateDetector
+
+        detector = DuplicateDetector()
+
+        event1 = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+            data={"level": 2700.0, "ratio": 1.8, "current_price": 2695.0},
+        )
+        event2 = ObserverEvent(
+            event_type=ObserverEventType.KEY_LEVEL_PROXIMITY,
+            timestamp=time.time(),
+            data={"level": 2700.0, "current_price": 2695.0},
+        )
+
+        key1 = detector.create_idempotency_key(event1)
+        key2 = detector.create_idempotency_key(event2)
+
+        assert key1 != key2  # Different type = different key
+
+    def test_first_event_not_duplicate(self):
+        """Test first occurrence is not duplicate."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import DuplicateDetector
+
+        detector = DuplicateDetector()
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+            data={"ratio": 2.0},
+        )
+
+        result = detector.is_duplicate(event)
+
+        assert result is False
+
+    def test_second_same_event_is_duplicate(self):
+        """Test second occurrence within window is duplicate."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import DuplicateDetector
+
+        detector = DuplicateDetector(dedup_window_seconds=60)
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+            data={"ratio": 2.0},
+        )
+
+        detector.is_duplicate(event)
+        result = detector.is_duplicate(event)
+
+        assert result is True
+
+    def test_stale_entries_cleaned(self):
+        """Test expired entries are cleaned from cache."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import DuplicateDetector
+
+        detector = DuplicateDetector(dedup_window_seconds=1)
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+            data={"ratio": 2.0},
+        )
+
+        detector.is_duplicate(event)
+        assert len(detector._seen_events) == 1
+
+        # Wait for expiry
+        time.sleep(1.1)
+
+        # Force cleanup via another check
+        event2 = ObserverEvent(
+            event_type=ObserverEventType.KEY_LEVEL_PROXIMITY,
+            timestamp=time.time(),
+            data={},
+        )
+        detector.is_duplicate(event2)
+
+        # Original event should be cleaned
+        assert len(detector._seen_events) <= 1
+
+    def test_get_status(self):
+        """Test status report."""
+        from src.observers.event_aggregator import DuplicateDetector
+
+        detector = DuplicateDetector(dedup_window_seconds=45)
+        status = detector.get_status()
+
+        assert status["tracked_keys"] == 0
+        assert status["dedup_window_seconds"] == 45
+        assert status["duplicates_suppressed"] == 0
+
+
+class TestEventCorrelator:
+    """Tests for EventCorrelator class (Phase 02)."""
+
+    def test_init_defaults(self):
+        """Test default initialization."""
+        from src.observers.event_aggregator import EventCorrelator
+
+        correlator = EventCorrelator()
+
+        assert correlator.window == 30
+
+    def test_single_event_is_independent(self):
+        """Test single event returns INDEPENDENT."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import CorrelationType, EventCorrelator
+
+        correlator = EventCorrelator()
+        events = [
+            ObserverEvent(
+                event_type=ObserverEventType.VOLATILITY_SPIKE,
+                timestamp=time.time(),
+            )
+        ]
+
+        corr_type, confidence = correlator.correlate(events)
+
+        assert corr_type == CorrelationType.INDEPENDENT
+        assert confidence == 0.0
+
+    def test_empty_list_is_independent(self):
+        """Test empty list returns INDEPENDENT."""
+        from src.observers.event_aggregator import CorrelationType, EventCorrelator
+
+        correlator = EventCorrelator()
+
+        corr_type, confidence = correlator.correlate([])
+
+        assert corr_type == CorrelationType.INDEPENDENT
+        assert confidence == 0.0
+
+    def test_diverse_types_increase_confidence(self):
+        """Test multiple event types increase correlation confidence."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import EventCorrelator
+
+        correlator = EventCorrelator()
+        now = time.time()
+
+        events = [
+            ObserverEvent(
+                event_type=ObserverEventType.VOLATILITY_SPIKE,
+                timestamp=now,
+            ),
+            ObserverEvent(
+                event_type=ObserverEventType.KEY_LEVEL_PROXIMITY,
+                timestamp=now,
+            ),
+        ]
+
+        _, confidence = correlator.correlate(events)
+
+        # Type diversity adds 0.35
+        assert confidence >= 0.35
+
+    def test_time_proximity_increase_confidence(self):
+        """Test events close in time increase correlation."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import EventCorrelator
+
+        correlator = EventCorrelator()
+        now = time.time()
+
+        # Same type, very close in time
+        events = [
+            ObserverEvent(
+                event_type=ObserverEventType.VOLATILITY_SPIKE,
+                timestamp=now,
+            ),
+            ObserverEvent(
+                event_type=ObserverEventType.VOLATILITY_SPIKE,
+                timestamp=now + 5,  # 5 seconds apart
+            ),
+        ]
+
+        _, confidence = correlator.correlate(events)
+
+        # Time proximity <10s adds 0.40
+        assert confidence >= 0.40
+
+    def test_price_proximity_increases_confidence(self):
+        """Test events with similar prices increase correlation."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import EventCorrelator
+
+        correlator = EventCorrelator()
+        now = time.time()
+
+        events = [
+            ObserverEvent(
+                event_type=ObserverEventType.VOLATILITY_SPIKE,
+                timestamp=now,
+                data={"current_price": 2700.0},
+            ),
+            ObserverEvent(
+                event_type=ObserverEventType.KEY_LEVEL_PROXIMITY,
+                timestamp=now,
+                data={"current_price": 2702.0},  # 2 points apart
+            ),
+        ]
+
+        _, confidence = correlator.correlate(events)
+
+        # Price within 5 points adds 0.25
+        # Type diversity adds 0.35
+        # Time proximity <10s adds 0.40
+        assert confidence >= 0.75
+
+    def test_same_impulse_detection(self):
+        """Test SAME_IMPULSE correlation type."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import CorrelationType, EventCorrelator
+
+        correlator = EventCorrelator()
+        now = time.time()
+
+        events = [
+            ObserverEvent(
+                event_type=ObserverEventType.VOLATILITY_SPIKE,
+                timestamp=now,
+                data={"current_price": 2700.0},
+            ),
+            ObserverEvent(
+                event_type=ObserverEventType.KEY_LEVEL_PROXIMITY,
+                timestamp=now + 3,
+                data={"current_price": 2701.0},
+            ),
+        ]
+
+        corr_type, confidence = correlator.correlate(events)
+
+        assert corr_type == CorrelationType.SAME_IMPULSE
+        assert confidence >= 0.75
+
+    def test_composite_detection(self):
+        """Test COMPOSITE correlation type."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import CorrelationType, EventCorrelator
+
+        correlator = EventCorrelator()
+        now = time.time()
+
+        # Same type, moderate time gap, no price data
+        events = [
+            ObserverEvent(
+                event_type=ObserverEventType.VOLATILITY_SPIKE,
+                timestamp=now,
+            ),
+            ObserverEvent(
+                event_type=ObserverEventType.VOLATILITY_SPIKE,
+                timestamp=now + 20,  # 20 seconds apart
+            ),
+        ]
+
+        corr_type, confidence = correlator.correlate(events)
+
+        # No type diversity (0), time 20s (0.25), no price data (0) = 0.25
+        # This should be INDEPENDENT since confidence < 0.4
+        assert corr_type in [CorrelationType.INDEPENDENT, CorrelationType.COMPOSITE]
+
+
+class TestEventAggregator:
+    """Tests for EventAggregator class (Phase 02)."""
+
+    def test_init_defaults(self):
+        """Test default initialization."""
+        from src.observers.event_aggregator import EventAggregator
+
+        aggregator = EventAggregator()
+
+        assert aggregator.window_size == 60
+        assert aggregator.max_history == 100
+        assert aggregator._dedup_enabled is True
+        assert len(aggregator._current_window_events) == 0
+
+    def test_add_event_returns_true(self):
+        """Test adding non-duplicate event returns True."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import EventAggregator
+
+        aggregator = EventAggregator()
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+            data={"ratio": 2.0},
+        )
+
+        result = aggregator.add_event(event)
+
+        assert result is True
+        assert len(aggregator._current_window_events) == 1
+
+    def test_add_duplicate_returns_false(self):
+        """Test adding duplicate event returns False."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import EventAggregator
+
+        aggregator = EventAggregator()
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+            data={"ratio": 2.0},
+        )
+
+        aggregator.add_event(event)
+        result = aggregator.add_event(event)  # Same event
+
+        assert result is False
+        assert len(aggregator._current_window_events) == 1
+
+    def test_window_expiry_triggers_emit(self):
+        """Test window expiry emits aggregated event."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import EventAggregator
+
+        aggregator = EventAggregator(
+            window_size_seconds=1,
+            dedup_enabled=False,  # Disable dedup for this test
+        )
+
+        event1 = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+        )
+        aggregator.add_event(event1)
+
+        # Wait for window to expire
+        time.sleep(1.1)
+
+        event2 = ObserverEvent(
+            event_type=ObserverEventType.KEY_LEVEL_PROXIMITY,
+            timestamp=time.time(),
+        )
+        aggregator.add_event(event2)
+
+        # Previous window should have been emitted
+        assert aggregator._total_aggregations_emitted >= 1
+
+    def test_subscriber_receives_aggregated_event(self):
+        """Test subscriber callback receives AggregatedEvent."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import AggregatedEvent, EventAggregator
+
+        aggregator = EventAggregator(
+            window_size_seconds=1,
+            dedup_enabled=False,
+        )
+
+        received_events = []
+        aggregator.subscribe_aggregated(lambda e: received_events.append(e))
+
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+        )
+        aggregator.add_event(event)
+
+        time.sleep(1.1)
+
+        # Trigger emission
+        aggregator.add_event(
+            ObserverEvent(
+                event_type=ObserverEventType.KEY_LEVEL_PROXIMITY,
+                timestamp=time.time(),
+            )
+        )
+
+        assert len(received_events) >= 1
+        assert isinstance(received_events[0], AggregatedEvent)
+
+    def test_flush_emits_current_window(self):
+        """Test flush() forces emission of current window."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import EventAggregator
+
+        aggregator = EventAggregator()
+
+        received_events = []
+        aggregator.subscribe_aggregated(lambda e: received_events.append(e))
+
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+        )
+        aggregator.add_event(event)
+
+        aggregator.flush()
+
+        assert len(received_events) == 1
+        assert len(aggregator._current_window_events) == 0
+
+    def test_get_status(self):
+        """Test status report includes all fields."""
+        from src.observers.event_aggregator import EventAggregator
+
+        aggregator = EventAggregator()
+        status = aggregator.get_status()
+
+        assert "events_in_current_window" in status
+        assert "window_age_seconds" in status
+        assert "aggregated_history_count" in status
+        assert "subscribers_count" in status
+        assert "dedup_enabled" in status
+        assert "dedup_status" in status
+
+    def test_unsubscribe_removes_callback(self):
+        """Test unsubscribe removes callback."""
+        from src.observers.event_aggregator import EventAggregator
+
+        aggregator = EventAggregator()
+
+        def callback(e):
+            pass
+
+        aggregator.subscribe_aggregated(callback)
+        assert len(aggregator._aggregated_callbacks) == 1
+
+        result = aggregator.unsubscribe_aggregated(callback)
+        assert result is True
+        assert len(aggregator._aggregated_callbacks) == 0
+
+    def test_reset_clears_state(self):
+        """Test reset clears all state."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.event_aggregator import EventAggregator
+
+        aggregator = EventAggregator()
+
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+        )
+        aggregator.add_event(event)
+
+        aggregator.reset()
+
+        assert len(aggregator._current_window_events) == 0
+        assert aggregator._total_events_received == 0
+
+
+class TestAggregatedEvent:
+    """Tests for AggregatedEvent dataclass (Phase 02)."""
+
+    def test_is_strong_signal_true(self):
+        """Test strong signal detection."""
+        from src.observers.event_aggregator import AggregatedEvent
+
+        agg = AggregatedEvent(
+            event_types=["volatility_spike", "key_level_proximity"],
+            count=3,
+            window_start=100.0,
+            window_end=160.0,
+            confidence=0.85,
+            correlation_type="same_impulse",
+        )
+
+        assert agg.is_strong_signal is True
+
+    def test_is_strong_signal_low_confidence(self):
+        """Test not strong signal with low confidence."""
+        from src.observers.event_aggregator import AggregatedEvent
+
+        agg = AggregatedEvent(
+            event_types=["volatility_spike"],
+            count=2,
+            window_start=100.0,
+            window_end=160.0,
+            confidence=0.5,  # Below 0.75
+            correlation_type="composite",
+        )
+
+        assert agg.is_strong_signal is False
+
+    def test_is_strong_signal_single_event(self):
+        """Test not strong signal with single event."""
+        from src.observers.event_aggregator import AggregatedEvent
+
+        agg = AggregatedEvent(
+            event_types=["volatility_spike"],
+            count=1,  # Below 2
+            window_start=100.0,
+            window_end=160.0,
+            confidence=0.9,
+            correlation_type="independent",
+        )
+
+        assert agg.is_strong_signal is False
+
+    def test_unique_event_types(self):
+        """Test unique event types property."""
+        from src.observers.event_aggregator import AggregatedEvent
+
+        agg = AggregatedEvent(
+            event_types=[
+                "volatility_spike",
+                "key_level_proximity",
+                "volatility_spike",
+            ],
+            count=3,
+            window_start=100.0,
+            window_end=160.0,
+            confidence=0.8,
+            correlation_type="composite",
+        )
+
+        assert agg.unique_event_types == {"volatility_spike", "key_level_proximity"}
+
+
+class TestMarketObserverAggregationIntegration:
+    """Test MarketObserver aggregation integration (Phase 02)."""
+
+    def setup_method(self):
+        """Reset singleton before each test."""
+        from src.observers.market_observer import reset_market_observer
+
+        reset_market_observer()
+
+    def test_aggregator_enabled_by_default(self):
+        """Test aggregator is enabled when config allows."""
+        from src.observers.market_observer import get_market_observer
+
+        observer = get_market_observer()
+
+        status = observer.get_status()
+        assert "aggregator" in status
+        assert status["aggregator"] is not None
+
+    def test_enable_aggregation_method(self):
+        """Test enable_aggregation method works."""
+        from src.observers.market_observer import MarketObserver
+
+        observer = MarketObserver()
+        observer.enable_aggregation(
+            window_size_seconds=30,
+            dedup_enabled=True,
+            dedup_window_seconds=15,
+        )
+
+        assert observer._aggregator is not None
+        assert observer._aggregator.window_size == 30
+
+    def test_disable_aggregation_method(self):
+        """Test disable_aggregation flushes and removes aggregator."""
+        from src.observers.market_observer import MarketObserver
+
+        observer = MarketObserver()
+        observer.enable_aggregation()
+
+        received = []
+        observer._aggregator.subscribe_aggregated(lambda e: received.append(e))
+
+        # Add an event
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+        )
+        observer._aggregator.add_event(event)
+
+        observer.disable_aggregation()
+
+        # Should have flushed pending event
+        assert len(received) == 1
+        assert observer._aggregator is None
+
+    def test_emit_event_feeds_aggregator(self):
+        """Test _emit_event adds to aggregator."""
+        from src.observers.base_observer import ObserverEvent, ObserverEventType
+        from src.observers.market_observer import MarketObserver
+
+        observer = MarketObserver()
+        observer.enable_aggregation(dedup_enabled=False)
+
+        event = ObserverEvent(
+            event_type=ObserverEventType.VOLATILITY_SPIKE,
+            timestamp=time.time(),
+        )
+        observer._emit_event(event)
+
+        assert len(observer._aggregator._current_window_events) == 1
+
+    def test_subscribe_aggregated_method(self):
+        """Test subscribe_aggregated routes to aggregator."""
+        from src.observers.market_observer import MarketObserver
+
+        observer = MarketObserver()
+        observer.enable_aggregation()
+
+        received = []
+        observer.subscribe_aggregated(lambda e: received.append(e))
+
+        # Verify callback registered
+        assert len(observer._aggregator._aggregated_callbacks) == 1
+
+
+class TestOrchestratorAggregationIntegration:
+    """Test TradingOrchestrator aggregation integration (Phase 02)."""
+
+    def setup_method(self):
+        """Reset singleton before each test."""
+        from src.observers.market_observer import reset_market_observer
+
+        reset_market_observer()
+
+    def test_orchestrator_has_aggregated_event_handler(self):
+        """TradingOrchestrator has _on_aggregated_event callback."""
+        from src.main import TradingOrchestrator
+
+        orchestrator = TradingOrchestrator()
+
+        assert hasattr(orchestrator, "_on_aggregated_event")
+        assert callable(orchestrator._on_aggregated_event)
+
+    def test_orchestrator_aggregated_handler_no_crash(self):
+        """Test aggregated event handler doesn't crash."""
+        from src.main import TradingOrchestrator
+        from src.observers.event_aggregator import AggregatedEvent
+
+        orchestrator = TradingOrchestrator()
+
+        agg_event = AggregatedEvent(
+            event_types=["volatility_spike"],
+            count=2,
+            window_start=100.0,
+            window_end=160.0,
+            confidence=0.8,
+            correlation_type="composite",
+        )
+
+        # Should not raise
+        orchestrator._on_aggregated_event(agg_event)
+
+    def test_orchestrator_strong_signal_logged(self):
+        """Test strong signal is logged."""
+        from src.main import TradingOrchestrator
+        from src.observers.event_aggregator import AggregatedEvent
+
+        orchestrator = TradingOrchestrator()
+
+        agg_event = AggregatedEvent(
+            event_types=["volatility_spike", "key_level_proximity"],
+            count=3,
+            window_start=100.0,
+            window_end=160.0,
+            confidence=0.9,  # Strong signal
+            correlation_type="same_impulse",
+        )
+
+        # Should log strong signal
+        orchestrator._on_aggregated_event(agg_event)

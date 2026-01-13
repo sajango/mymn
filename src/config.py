@@ -318,6 +318,20 @@ class Settings(BaseSettings):
         default=3, ge=1, le=10, description="Consecutive compression bars for trigger"
     )
 
+    # Event Aggregation Settings (Phase 02 - Observer Enhancements)
+    observer_aggregation_enabled: bool = Field(
+        default=True, description="Enable event aggregation and deduplication"
+    )
+    observer_aggregation_window_seconds: int = Field(
+        default=60, ge=10, le=300, description="Time window for event aggregation"
+    )
+    observer_dedup_window_seconds: int = Field(
+        default=30, ge=5, le=120, description="Time window for duplicate detection"
+    )
+    observer_correlation_window_seconds: int = Field(
+        default=30, ge=5, le=120, description="Time window for event correlation"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""

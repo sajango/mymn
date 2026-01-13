@@ -3,6 +3,10 @@
 Provides pub/sub pattern for event notifications and centralized management
 of all market observers. Supports lazy loading via singleton factory.
 Thread-safe for concurrent access from scheduler jobs.
+
+Phase 02 - Observer Enhancements:
+- Event aggregation and deduplication integration
+- Aggregated event subscriptions
 """
 
 import logging
@@ -12,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from src.observers.base_observer import BaseObserver, ObserverEvent
+from src.observers.event_aggregator import AggregatedEvent, EventAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,7 @@ class MarketObserver:
         self._subscribers: List[Callable[[ObserverEvent], None]] = []
         self._state = MarketObserverState()
         self._lock = threading.RLock()  # Thread-safe access to lists
+        self._aggregator: Optional[EventAggregator] = None
 
     def register_observer(self, observer: BaseObserver):
         """Register an observer for monitoring.
@@ -107,6 +113,69 @@ class MarketObserver:
             except ValueError:
                 return False
 
+    def enable_aggregation(
+        self,
+        window_size_seconds: int = 60,
+        dedup_enabled: bool = True,
+        dedup_window_seconds: int = 30,
+        correlation_window_seconds: int = 30,
+    ):
+        """Enable event aggregation and deduplication.
+
+        Args:
+            window_size_seconds: Aggregation window duration
+            dedup_enabled: Enable duplicate detection
+            dedup_window_seconds: Deduplication window
+            correlation_window_seconds: Correlation window for scoring
+        """
+        self._aggregator = EventAggregator(
+            window_size_seconds=window_size_seconds,
+            dedup_enabled=dedup_enabled,
+            dedup_window_seconds=dedup_window_seconds,
+            correlation_window_seconds=correlation_window_seconds,
+        )
+        logger.info(
+            f"Event aggregation enabled: window={window_size_seconds}s, "
+            f"dedup={dedup_enabled}, dedup_window={dedup_window_seconds}s"
+        )
+
+    def disable_aggregation(self):
+        """Disable event aggregation."""
+        if self._aggregator:
+            self._aggregator.flush()  # Emit any pending events
+            self._aggregator = None
+            logger.info("Event aggregation disabled")
+
+    def subscribe_aggregated(
+        self, callback: Callable[[AggregatedEvent], None]
+    ):
+        """Subscribe to aggregated events.
+
+        Args:
+            callback: Function to call with AggregatedEvent
+        """
+        if self._aggregator:
+            self._aggregator.subscribe_aggregated(callback)
+        else:
+            logger.warning("Aggregation not enabled, subscribe_aggregated ignored")
+
+    def unsubscribe_aggregated(
+        self, callback: Callable[[AggregatedEvent], None]
+    ) -> bool:
+        """Unsubscribe from aggregated events.
+
+        Returns:
+            True if callback was removed
+        """
+        if self._aggregator:
+            return self._aggregator.unsubscribe_aggregated(callback)
+        return False
+
+    def flush_aggregation(self):
+        """Force emit current aggregation window."""
+        if self._aggregator:
+            self._aggregator.flush()
+
     def check_all(self, market_data: dict) -> List[ObserverEvent]:
         """Check all observers for triggered conditions.
 
@@ -137,7 +206,7 @@ class MarketObserver:
         return events
 
     def _emit_event(self, event: ObserverEvent):
-        """Emit event to all subscribers.
+        """Emit event to all subscribers and aggregator.
 
         Args:
             event: ObserverEvent to emit
@@ -154,6 +223,10 @@ class MarketObserver:
                 subscriber(event)
             except Exception as e:
                 logger.error(f"Subscriber callback failed: {e}")
+
+        # Add to aggregator if enabled (outside lock to avoid deadlock)
+        if self._aggregator:
+            self._aggregator.add_event(event)
 
     def get_observer(self, name: str) -> Optional[BaseObserver]:
         """Get observer by name.
@@ -207,6 +280,7 @@ class MarketObserver:
             "active_observers": self._state.active_observers,
             "subscribers_count": subscribers_count,
             "observers": observer_statuses,
+            "aggregator": self._aggregator.get_status() if self._aggregator else None,
         }
 
 
@@ -260,6 +334,15 @@ def get_market_observer() -> MarketObserver:
                     min_bars=config.observer_compression_min_bars,
                     cooldown_seconds=config.observer_cooldown_seconds,
                 )
+            )
+
+        # Enable aggregation (Phase 02 - Observer Enhancements)
+        if config.observer_aggregation_enabled:
+            _market_observer.enable_aggregation(
+                window_size_seconds=config.observer_aggregation_window_seconds,
+                dedup_enabled=True,
+                dedup_window_seconds=config.observer_dedup_window_seconds,
+                correlation_window_seconds=config.observer_correlation_window_seconds,
             )
 
         logger.info("MarketObserver initialized with default observers")

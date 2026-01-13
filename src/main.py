@@ -42,6 +42,7 @@ from src.reports import get_weekly_reporter
 from src.volatility_manager import get_volatility_manager
 from src.observers.market_observer import get_market_observer
 from src.observers.base_observer import ObserverEvent
+from src.observers.event_aggregator import AggregatedEvent
 
 # Configure logging with UTF-8 support for emoji handling on Windows
 settings = get_settings()
@@ -196,8 +197,10 @@ class TradingOrchestrator:
         """Lazy load market observer with event subscription."""
         if self._market_observer is None:
             self._market_observer = get_market_observer()
-            # Subscribe to events - triggers analysis when observer detects conditions
+            # Subscribe to raw events - triggers analysis when observer detects conditions
             self._market_observer.subscribe(self._on_observer_event)
+            # Subscribe to aggregated events (Phase 02 - Observer Enhancements)
+            self._market_observer.subscribe_aggregated(self._on_aggregated_event)
         return self._market_observer
 
     def _on_observer_event(self, event: ObserverEvent):
@@ -221,6 +224,35 @@ class TradingOrchestrator:
         except Exception as e:
             # Log but don't propagate - observer system should be resilient
             logger.warning(f"Observer event handler error (non-blocking): {e}")
+
+    def _on_aggregated_event(self, agg_event: AggregatedEvent):
+        """Handle aggregated observer events (Phase 02 - Observer Enhancements).
+
+        Called when aggregation window closes with correlated events.
+        Strong signals (confidence >= 0.75, count >= 2) may trigger priority analysis.
+
+        Args:
+            agg_event: AggregatedEvent from EventAggregator
+        """
+        try:
+            logger.info(
+                f"Aggregated event received: {agg_event.count} events, "
+                f"types={agg_event.unique_event_types}, "
+                f"correlation={agg_event.correlation_type}, "
+                f"confidence={agg_event.confidence:.2f}"
+            )
+
+            if agg_event.is_strong_signal:
+                logger.info(
+                    f"Strong aggregated signal detected: "
+                    f"{agg_event.count} correlated events, confidence={agg_event.confidence:.2f}"
+                )
+                # Could trigger priority analysis here in future enhancements
+                # For now, logging for monitoring/debugging
+
+        except Exception as e:
+            # Log but don't propagate - aggregation system should be resilient
+            logger.warning(f"Aggregated event handler error (non-blocking): {e}")
 
     def _reset_daily_counter_if_needed(self):
         """Reset daily auto-trade counter at midnight."""
