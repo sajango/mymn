@@ -63,11 +63,11 @@ class PortfolioRiskManager:
         self._mt5 = mt5
         self._db = db
         
-        # Risk thresholds
-        self.max_portfolio_heat = 0.06      # Max 6% of account at risk
-        self.warning_heat = 0.04            # Warning at 4%
+        # Risk thresholds (as percentage 0-100)
+        self.max_portfolio_heat = 6.0       # Max 6% of account at risk
+        self.warning_heat = 4.0             # Warning at 4%
         self.max_positions = 3              # Max concurrent positions
-        self.max_correlated_risk = 0.08     # Max 8% with correlations
+        self.max_correlated_risk = 8.0      # Max 8% with correlations
         
         # Performance-based adjustments
         self.win_rate_target = 0.40         # Target 40% win rate
@@ -203,7 +203,7 @@ class PortfolioRiskManager:
             f"[PortfolioHeat] Final: "
             f"Base Heat: {heat_percentage:.2f}% + Correlated: {correlated_risk:.2f}% = "
             f"Total: {total_heat_with_correlation:.2f}% | "
-            f"Thresholds: warn={self.warning_heat*100:.0f}%, max={self.max_portfolio_heat*100:.0f}% | "
+            f"Thresholds: warn={self.warning_heat:.0f}%, max={self.max_portfolio_heat:.0f}% | "
             f"Status: {risk_status.upper()}"
         )
         
@@ -324,7 +324,7 @@ class PortfolioRiskManager:
         if total_heat_with_correlation > self.max_portfolio_heat:
             return False, (f"Portfolio heat too high: "
                           f"{total_heat_with_correlation:.1f}% > "
-                          f"{self.max_portfolio_heat*100:.0f}%")
+                          f"{self.max_portfolio_heat:.0f}%")
         
         return True, "Position allowed"
     
