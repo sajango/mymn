@@ -1264,16 +1264,16 @@ class Database:
         params = []
         
         if start_date:
-            query += " AND t.entry_time >= ?"
+            query += " AND t.open_time >= ?"
             params.append(start_date)
         if end_date:
-            query += " AND t.entry_time <= ?"
+            query += " AND t.open_time <= ?"
             params.append(end_date)
         if symbol:
             query += " AND t.symbol = ?"
             params.append(symbol)
             
-        query += " ORDER BY t.entry_time"
+        query += " ORDER BY t.open_time"
         
         with self._get_connection() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -1335,7 +1335,7 @@ class Database:
         FROM trades t
         LEFT JOIN signals s ON t.signal_id = s.id
         WHERE s.session = ? AND t.status IN ('closed', 'partial_close')
-        ORDER BY t.entry_time
+        ORDER BY t.open_time
         """
         
         with self._get_connection() as conn:
