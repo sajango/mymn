@@ -113,6 +113,64 @@ class MT5Client:
 
         return True
 
+    def get_tick(self, symbol: str) -> Optional[dict]:
+        """Get current tick data for symbol.
+
+        Args:
+            symbol: Trading symbol
+
+        Returns:
+            Dict with bid, ask, time or None if unavailable
+        """
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return None
+
+        return {
+            "bid": tick.bid,
+            "ask": tick.ask,
+            "time": tick.time,
+            "volume": tick.volume,
+        }
+
+    def get_last_candles(
+        self, symbol: str, timeframe: str = "M15", count: int = 2
+    ) -> Optional[list[dict]]:
+        """Get last N candles for compression observer.
+
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe string (M15, M30, H1, H4)
+            count: Number of candles to fetch
+
+        Returns:
+            List of candle dicts with open, high, low, close or None
+        """
+        if timeframe not in TIMEFRAMES:
+            logger.error(f"Invalid timeframe: {timeframe}")
+            return None
+
+        tf = TIMEFRAMES[timeframe]
+        rates = mt5.copy_rates_from_pos(symbol, tf, 0, count)
+
+        if rates is None or len(rates) == 0:
+            error = mt5.last_error()
+            logger.debug(f"Failed to fetch candles: {error}")
+            return None
+
+        candles = []
+        for rate in rates:
+            candles.append({
+                "time": rate[0],
+                "open": rate[1],
+                "high": rate[2],
+                "low": rate[3],
+                "close": rate[4],
+                "volume": rate[5],
+            })
+
+        return candles
+
     def get_current_spread(self, symbol: str) -> Optional[float]:
         """Get current spread in pips for symbol.
 

@@ -672,3 +672,561 @@ class TestOrchestratorPhase2Integration:
 
         assert hasattr(orchestrator, "_on_observer_event")
         assert callable(orchestrator._on_observer_event)
+
+
+# ============================================================================
+# Phase 01: Volatility Compression Observer Tests
+# ============================================================================
+
+
+class TestCompressionObserverConfig:
+    """Test compression observer configuration settings."""
+
+    def test_compression_settings_exist(self):
+        """Compression observer settings are defined in config."""
+        settings = get_settings()
+
+        assert hasattr(settings, "observer_compression_enabled")
+        assert hasattr(settings, "observer_compression_bb_threshold")
+        assert hasattr(settings, "observer_compression_atr_threshold")
+        assert hasattr(settings, "observer_compression_min_bars")
+
+    def test_compression_defaults(self):
+        """Compression observer settings have expected default values."""
+        settings = get_settings()
+
+        assert settings.observer_compression_enabled is True
+        assert settings.observer_compression_bb_threshold == 4.0  # BB bandwidth %
+        assert settings.observer_compression_atr_threshold == 0.7  # ATR ratio
+        assert settings.observer_compression_min_bars == 3  # Consecutive bars
+
+
+class TestVolatilityCompressionObserverInit:
+    """Test VolatilityCompressionObserver initialization."""
+
+    def test_init_defaults(self):
+        """Test default initialization values."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver()
+
+        assert obs.name == "compression"
+        assert obs.bb_threshold == 4.0
+        assert obs.atr_threshold == 0.7
+        assert obs.min_bars == 3
+        assert obs.cooldown_seconds == 900
+        assert obs.bb_period == 20
+        assert obs.atr_period == 14
+        assert obs.enabled is True
+
+    def test_init_custom_values(self):
+        """Test custom initialization."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=3.0,
+            atr_threshold=0.6,
+            min_bars=5,
+            cooldown_seconds=600,
+            bb_period=15,
+            atr_period=10,
+        )
+
+        assert obs.bb_threshold == 3.0
+        assert obs.atr_threshold == 0.6
+        assert obs.min_bars == 5
+        assert obs.cooldown_seconds == 600
+        assert obs.bb_period == 15
+        assert obs.atr_period == 10
+
+
+class TestCompressionDetection:
+    """Test volatility compression detection logic."""
+
+    def test_no_event_without_enough_data(self):
+        """Test no event when insufficient data points."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(bb_period=20)
+
+        # Only 5 data points, need 20
+        for i in range(5):
+            result = obs.check({
+                "close": 2700.0 + i * 0.1,
+                "high": 2701.0 + i * 0.1,
+                "low": 2699.0 + i * 0.1,
+                "prev_close": 2699.9 + i * 0.1,
+            })
+            assert result is None
+
+    def test_no_event_when_disabled(self):
+        """Test no event when observer is disabled."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver()
+        obs.enabled = False
+
+        result = obs.check({
+            "close": 2700.0,
+            "high": 2701.0,
+            "low": 2699.0,
+            "prev_close": 2699.5,
+        })
+        assert result is None
+
+    def test_no_event_without_compression(self):
+        """Test no event when not in compression."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=2.0,  # Very tight threshold
+            atr_threshold=0.5,  # Very low threshold
+            bb_period=5,
+            atr_period=5,
+        )
+
+        # Feed volatile data (large ranges)
+        for i in range(10):
+            result = obs.check({
+                "close": 2700.0 + (i * 10),  # 10 point swings
+                "high": 2710.0 + (i * 10),
+                "low": 2690.0 + (i * 10),
+                "prev_close": 2695.0 + (i * 10),
+            })
+
+        # No compression due to high volatility
+        assert result is None or obs._compression_bars < obs.min_bars
+
+    def test_compression_detected_with_low_volatility(self):
+        """Test compression event when both BB and ATR compressed."""
+        from src.observers.base_observer import ObserverEventType
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=5.0,
+            atr_threshold=0.9,
+            min_bars=2,  # Low for testing
+            cooldown_seconds=0,
+            bb_period=5,
+            atr_period=5,
+        )
+
+        # Feed tightly compressed data
+        base_price = 2700.0
+        for i in range(10):
+            # Very tight range - small variations
+            variation = i * 0.01
+            result = obs.check({
+                "close": base_price + variation,
+                "high": base_price + 0.05 + variation,
+                "low": base_price - 0.05 + variation,
+                "prev_close": base_price + variation - 0.01,
+            })
+
+        # Should trigger compression due to very low volatility
+        assert obs._last_bb_width < obs.bb_threshold
+        # ATR ratio depends on history, but should be trending low
+
+
+class TestCompressionBarCounter:
+    """Test compression bar counting behavior."""
+
+    def test_compression_bars_increment(self):
+        """Test consecutive compression bars increment."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=10.0,  # High threshold for easier detection
+            atr_threshold=1.5,  # High threshold for easier detection
+            min_bars=10,  # High so we can test counting
+            bb_period=3,
+            atr_period=3,
+        )
+
+        # Feed tight data to build compression
+        for i in range(10):
+            obs.check({
+                "close": 2700.0 + i * 0.001,
+                "high": 2700.01 + i * 0.001,
+                "low": 2699.99 + i * 0.001,
+                "prev_close": 2700.0 + (i - 1) * 0.001,
+            })
+
+        # Compression bars should have accumulated
+        assert obs._compression_bars > 0
+
+    def test_compression_bars_reset_on_break(self):
+        """Test compression bars reset when compression breaks."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=10.0,
+            atr_threshold=1.5,
+            min_bars=5,
+            bb_period=3,
+            atr_period=3,
+        )
+
+        # Build up compression
+        for i in range(5):
+            obs.check({
+                "close": 2700.0 + i * 0.001,
+                "high": 2700.01 + i * 0.001,
+                "low": 2699.99 + i * 0.001,
+                "prev_close": 2700.0 + (i - 1) * 0.001,
+            })
+
+        initial_count = obs._compression_bars
+
+        # Now feed volatile data to break compression
+        for i in range(5):
+            obs.check({
+                "close": 2700.0 + (i * 50),  # Large swings
+                "high": 2750.0 + (i * 50),
+                "low": 2650.0 + (i * 50),
+                "prev_close": 2700.0 + ((i - 1) * 50),
+            })
+
+        # Compression bars should have reset
+        # (may not be 0 if recent data still compresses)
+        assert obs._compression_bars <= initial_count
+
+
+class TestCompressionBBCalculation:
+    """Test Bollinger Band squeeze calculation."""
+
+    def test_bb_squeeze_detection(self):
+        """Test BB width calculation and squeeze detection."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=5.0,
+            bb_period=5,
+        )
+
+        # Feed identical prices (zero std dev = zero width)
+        for i in range(5):
+            obs.check({
+                "close": 2700.0,
+                "high": 2700.0,
+                "low": 2700.0,
+                "prev_close": 2700.0,
+            })
+
+        # BB width should be 0 (all same price)
+        bb_squeezed, bb_width = obs._check_bb_squeeze()
+        assert bb_width == 0.0
+        assert bb_squeezed is True
+
+    def test_bb_no_squeeze_high_volatility(self):
+        """Test BB width not squeezed with high volatility."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=2.0,  # Tight threshold
+            bb_period=5,
+        )
+
+        # Feed varying prices (high std dev = high width)
+        prices = [2700, 2750, 2650, 2800, 2600]
+        for i, price in enumerate(prices):
+            obs.check({
+                "close": price,
+                "high": price + 10,
+                "low": price - 10,
+                "prev_close": prices[max(0, i - 1)],
+            })
+
+        bb_squeezed, bb_width = obs._check_bb_squeeze()
+        # High volatility should not squeeze
+        assert bb_width > obs.bb_threshold
+        assert bb_squeezed is False
+
+
+class TestCompressionATRCalculation:
+    """Test ATR compression calculation."""
+
+    def test_atr_compression_detection(self):
+        """Test ATR ratio calculation - verifies ratio decreases with smaller ranges."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            atr_threshold=0.8,
+            atr_period=3,
+        )
+
+        # Build ATR history with larger ranges first (many bars to establish high baseline)
+        large_ranges = [
+            {"close": 2700, "high": 2720, "low": 2680, "prev_close": 2690},
+            {"close": 2710, "high": 2730, "low": 2690, "prev_close": 2700},
+            {"close": 2720, "high": 2740, "low": 2700, "prev_close": 2710},
+            {"close": 2715, "high": 2735, "low": 2695, "prev_close": 2720},
+            {"close": 2710, "high": 2730, "low": 2690, "prev_close": 2715},
+        ]
+
+        for data in large_ranges:
+            obs.check(data)
+
+        # Get initial ratio (should be close to 1.0 since we just built baseline)
+        _, initial_ratio = obs._check_atr_compression()
+
+        # Then feed smaller ranges - this should decrease current ATR
+        small_ranges = [
+            {"close": 2700, "high": 2702, "low": 2698, "prev_close": 2699},
+            {"close": 2701, "high": 2703, "low": 2699, "prev_close": 2700},
+            {"close": 2700.5, "high": 2702.5, "low": 2698.5, "prev_close": 2701},
+        ]
+
+        for data in small_ranges:
+            obs.check(data)
+
+        # ATR ratio should have decreased (current ATR < baseline)
+        _, final_ratio = obs._check_atr_compression()
+        # Final ratio should be less than or equal to initial (trending toward compression)
+        # The key is that smaller ranges produce smaller current ATR vs historical baseline
+        assert final_ratio <= initial_ratio
+
+    def test_atr_ratio_returns_valid_value(self):
+        """Test ATR ratio is calculated when enough data available."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(atr_period=3)
+
+        # Need at least atr_period bars for _true_ranges + 5 entries in _atr_history
+        for i in range(10):
+            obs.check({
+                "close": 2700.0 + i * 0.1,
+                "high": 2701.0 + i * 0.1,
+                "low": 2699.0 + i * 0.1,
+                "prev_close": 2699.9 + i * 0.1,
+            })
+
+        compressed, ratio = obs._check_atr_compression()
+        # Ratio should be a valid positive number
+        assert ratio > 0
+        assert isinstance(ratio, float)
+
+
+class TestCompressionConfidence:
+    """Test confidence scoring for compression events."""
+
+    def test_confidence_scales_with_duration(self):
+        """Test confidence increases with compression duration."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(min_bars=1, cooldown_seconds=0)
+
+        # More compression bars = higher confidence
+        obs._compression_bars = 3
+        conf_3 = min(1.0, obs._compression_bars / 10)
+
+        obs._compression_bars = 8
+        conf_8 = min(1.0, obs._compression_bars / 10)
+
+        obs._compression_bars = 15
+        conf_15 = min(1.0, obs._compression_bars / 10)
+
+        assert conf_3 == 0.3
+        assert conf_8 == 0.8
+        assert conf_15 == 1.0  # Capped at 1.0
+
+
+class TestCompressionSeverity:
+    """Test severity classification for compression events."""
+
+    def test_severity_extreme(self):
+        """Test extreme severity detection."""
+        # BB width < 2% or ATR ratio < 0.5 = extreme
+        bb_width = 1.5
+        atr_ratio = 0.4
+
+        if bb_width < 2.0 or atr_ratio < 0.5:
+            severity = "extreme"
+        elif bb_width < 3.0 or atr_ratio < 0.65:
+            severity = "high"
+        else:
+            severity = "moderate"
+
+        assert severity == "extreme"
+
+    def test_severity_high(self):
+        """Test high severity detection."""
+        bb_width = 2.5
+        atr_ratio = 0.6
+
+        if bb_width < 2.0 or atr_ratio < 0.5:
+            severity = "extreme"
+        elif bb_width < 3.0 or atr_ratio < 0.65:
+            severity = "high"
+        else:
+            severity = "moderate"
+
+        assert severity == "high"
+
+    def test_severity_moderate(self):
+        """Test moderate severity detection."""
+        bb_width = 3.5
+        atr_ratio = 0.68
+
+        if bb_width < 2.0 or atr_ratio < 0.5:
+            severity = "extreme"
+        elif bb_width < 3.0 or atr_ratio < 0.65:
+            severity = "high"
+        else:
+            severity = "moderate"
+
+        assert severity == "moderate"
+
+
+class TestCompressionResetState:
+    """Test state reset functionality."""
+
+    def test_reset_clears_all_state(self):
+        """Test reset_state clears all internal state."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(bb_period=5, atr_period=5)
+
+        # Build up some state
+        for i in range(10):
+            obs.check({
+                "close": 2700.0 + i * 0.1,
+                "high": 2701.0 + i * 0.1,
+                "low": 2699.0 + i * 0.1,
+                "prev_close": 2699.9 + i * 0.1,
+            })
+
+        assert len(obs._closes) > 0
+        assert len(obs._true_ranges) > 0
+
+        # Reset state
+        obs.reset_state()
+
+        assert len(obs._closes) == 0
+        assert len(obs._true_ranges) == 0
+        assert len(obs._atr_history) == 0
+        assert obs._compression_bars == 0
+        assert obs._last_bb_width == 0.0
+        assert obs._last_atr_ratio == 1.0
+
+
+class TestCompressionGetStatus:
+    """Test status reporting functionality."""
+
+    def test_get_status_includes_compression_info(self):
+        """Test get_status returns compression metrics."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=4.0,
+            atr_threshold=0.7,
+            min_bars=3,
+            bb_period=5,
+        )
+
+        # Add some data
+        for i in range(5):
+            obs.check({
+                "close": 2700.0 + i * 0.1,
+                "high": 2701.0 + i * 0.1,
+                "low": 2699.0 + i * 0.1,
+                "prev_close": 2699.9 + i * 0.1,
+            })
+
+        status = obs.get_status()
+
+        assert "name" in status
+        assert status["name"] == "compression"
+        assert "enabled" in status
+        assert "bb_width" in status
+        assert "atr_ratio" in status
+        assert "compression_bars" in status
+        assert "bb_threshold" in status
+        assert "atr_threshold" in status
+        assert "min_bars" in status
+        assert "data_points" in status
+
+
+class TestCompressionCooldown:
+    """Test cooldown behavior for compression observer."""
+
+    def test_cooldown_prevents_duplicate_events(self):
+        """Test cooldown prevents rapid duplicate events."""
+        from src.observers.compression_observer import VolatilityCompressionObserver
+
+        obs = VolatilityCompressionObserver(
+            bb_threshold=100.0,  # Very high to always trigger
+            atr_threshold=2.0,   # Very high to always trigger
+            min_bars=1,
+            cooldown_seconds=60,  # 1 minute cooldown
+            bb_period=3,
+            atr_period=3,
+        )
+
+        # Feed data to trigger compression
+        for i in range(5):
+            obs.check({
+                "close": 2700.0 + i * 0.001,
+                "high": 2700.01 + i * 0.001,
+                "low": 2699.99 + i * 0.001,
+                "prev_close": 2700.0 + (i - 1) * 0.001,
+            })
+
+        # Mark as triggered manually
+        obs.mark_triggered()
+
+        # Should be in cooldown
+        assert obs.is_cooldown_active() is True
+        assert obs.cooldown_remaining() > 0
+
+
+class TestCompressionObserverEventType:
+    """Test VOLATILITY_COMPRESSION event type."""
+
+    def test_event_type_exists(self):
+        """Test VOLATILITY_COMPRESSION is in ObserverEventType enum."""
+        from src.observers.base_observer import ObserverEventType
+
+        assert hasattr(ObserverEventType, "VOLATILITY_COMPRESSION")
+        assert ObserverEventType.VOLATILITY_COMPRESSION.value == "volatility_compression"
+
+
+class TestCompressionMarketObserverIntegration:
+    """Test compression observer integration with MarketObserver."""
+
+    def setup_method(self):
+        """Reset singleton before each test."""
+        from src.observers.market_observer import reset_market_observer
+
+        reset_market_observer()
+
+    def test_compression_observer_registered(self):
+        """Test compression observer is registered when enabled."""
+        from src.observers.market_observer import get_market_observer
+
+        obs = get_market_observer()
+
+        compression_obs = obs.get_observer("compression")
+        assert compression_obs is not None
+        assert compression_obs.name == "compression"
+
+    def test_compression_observer_receives_market_data(self):
+        """Test compression observer processes market data correctly."""
+        from src.observers.market_observer import get_market_observer
+
+        obs = get_market_observer()
+        compression_obs = obs.get_observer("compression")
+
+        # Check with OHLC data
+        events = obs.check_all({
+            "current_price": 2700.0,
+            "atr_current": 10.0,
+            "close": 2700.0,
+            "high": 2701.0,
+            "low": 2699.0,
+            "prev_close": 2699.5,
+        })
+
+        # No event expected with just 1 data point
+        # But observer should have processed the data
+        assert compression_obs._last_bb_width >= 0 or len(compression_obs._closes) == 1

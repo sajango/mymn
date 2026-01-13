@@ -695,11 +695,31 @@ class TradingOrchestrator:
             if volatility_obs and volatility_obs.needs_baseline_update():
                 await self._update_observer_baseline()
 
+            # Get last 2 candles for compression observer (high/low/prev_close)
+            candles = await loop.run_in_executor(
+                executor,
+                mt5_client.get_last_candles,
+                config.mt5_symbol,
+                "M15",
+                2,
+            )
+
             # Prepare market data for observers
             market_data = {
                 "current_price": current_price,
                 "atr_current": self._observer_state.atr_baseline_m30,
             }
+
+            # Add OHLC data for compression observer if available
+            if candles and len(candles) >= 2:
+                latest = candles[-1]
+                prev = candles[-2]
+                market_data.update({
+                    "close": latest["close"],
+                    "high": latest["high"],
+                    "low": latest["low"],
+                    "prev_close": prev["close"],
+                })
 
             # Check all observers - events handled via subscription callback
             events = self.market_observer.check_all(market_data)

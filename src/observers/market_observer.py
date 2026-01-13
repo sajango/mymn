@@ -229,6 +229,7 @@ def get_market_observer() -> MarketObserver:
 
         # Import here to avoid circular imports
         from src.config import get_settings
+        from src.observers.compression_observer import VolatilityCompressionObserver
         from src.observers.key_level_observer import KeyLevelObserver
         from src.observers.volatility_observer import VolatilitySpikeObserver
 
@@ -249,6 +250,17 @@ def get_market_observer() -> MarketObserver:
                 cooldown_seconds=config.observer_cooldown_seconds,
             )
         )
+
+        # Register compression observer (Phase 01 - Observer Enhancements)
+        if config.observer_compression_enabled:
+            _market_observer.register_observer(
+                VolatilityCompressionObserver(
+                    bb_threshold=config.observer_compression_bb_threshold,
+                    atr_threshold=config.observer_compression_atr_threshold,
+                    min_bars=config.observer_compression_min_bars,
+                    cooldown_seconds=config.observer_cooldown_seconds,
+                )
+            )
 
         logger.info("MarketObserver initialized with default observers")
 

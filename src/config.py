@@ -304,6 +304,20 @@ class Settings(BaseSettings):
         default=3600, ge=300, le=7200, description="Interval to update ATR baseline cache"
     )
 
+    # Compression Observer Settings (Phase 01 - Observer Enhancements)
+    observer_compression_enabled: bool = Field(
+        default=True, description="Enable volatility compression observer"
+    )
+    observer_compression_bb_threshold: float = Field(
+        default=4.0, ge=1.0, le=10.0, description="BB bandwidth % below which squeeze detected"
+    )
+    observer_compression_atr_threshold: float = Field(
+        default=0.7, ge=0.3, le=1.0, description="ATR ratio below which compression detected"
+    )
+    observer_compression_min_bars: int = Field(
+        default=3, ge=1, le=10, description="Consecutive compression bars for trigger"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""
