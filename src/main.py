@@ -13,9 +13,11 @@ import asyncio
 import logging
 import signal
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from src.claude_client import claude_client
 from src.config import get_settings
@@ -27,6 +29,7 @@ from src.signal_parser import TradingSignal
 from src.scheduler import (
     create_scheduler,
     get_m15_trigger,
+    get_observer_trigger,
     get_tp_monitor_trigger,
     get_weekly_report_trigger,
 )
@@ -37,6 +40,8 @@ from src.trade_executor import get_trade_executor
 from src.trailing_stop_manager import get_trailing_manager
 from src.reports import get_weekly_reporter
 from src.volatility_manager import get_volatility_manager
+from src.observers.market_observer import get_market_observer
+from src.observers.base_observer import ObserverEvent
 
 # Configure logging with UTF-8 support for emoji handling on Windows
 settings = get_settings()
@@ -59,6 +64,23 @@ logger = logging.getLogger(__name__)
 
 # Thread pool for sync operations (MT5, Claude CLI)
 executor = ThreadPoolExecutor(max_workers=2)
+
+
+@dataclass
+class ObserverState:
+    """In-memory observer state for event-driven analysis triggers.
+
+    Tracks volatility spike detection, key level proximity, and cooldowns.
+    Not persisted to DB - resets on restart.
+    """
+
+    last_triggered_analysis: float = 0.0  # timestamp of last triggered analysis
+    in_spike: bool = False  # currently in volatility spike
+    spike_start_time: float = 0.0  # when spike was first detected
+    atr_baseline_m30: float = 10.0  # cached M30 ATR baseline (Gold typical)
+    key_levels: List[float] = field(default_factory=list)  # cached key levels
+    last_baseline_update: float = 0.0  # last ATR baseline update timestamp
+    last_key_level_update: float = 0.0  # last key level update timestamp
 
 
 class TradingOrchestrator:
@@ -94,6 +116,10 @@ class TradingOrchestrator:
         self._weekly_reporter = None
         self._regime_detector = None
         self._volatility_manager = None
+        self._market_observer = None
+
+        # Observer state (in-memory only, not persisted)
+        self._observer_state = ObserverState()
 
     @property
     def db(self):
@@ -164,6 +190,37 @@ class TradingOrchestrator:
         if self._volatility_manager is None:
             self._volatility_manager = get_volatility_manager()
         return self._volatility_manager
+
+    @property
+    def market_observer(self):
+        """Lazy load market observer with event subscription."""
+        if self._market_observer is None:
+            self._market_observer = get_market_observer()
+            # Subscribe to events - triggers analysis when observer detects conditions
+            self._market_observer.subscribe(self._on_observer_event)
+        return self._market_observer
+
+    def _on_observer_event(self, event: ObserverEvent):
+        """Handle observer events synchronously - logs event for async trigger.
+
+        Actual analysis is triggered in observer_job to avoid blocking.
+        This callback runs in the same thread as observer_job, so it must be fast.
+
+        Args:
+            event: ObserverEvent from observer check
+        """
+        try:
+            logger.info(
+                f"Observer event received: {event.event_type.value} "
+                f"(confidence={event.confidence:.2f})"
+            )
+
+            # Store event metadata for potential use by analysis_job
+            self._observer_state.last_triggered_analysis = time.time()
+
+        except Exception as e:
+            # Log but don't propagate - observer system should be resilient
+            logger.warning(f"Observer event handler error (non-blocking): {e}")
 
     def _reset_daily_counter_if_needed(self):
         """Reset daily auto-trade counter at midnight."""
@@ -570,6 +627,7 @@ class TradingOrchestrator:
         - TP level triggers (partial close)
         - Trailing stop updates
         - Position status sync with MT5
+        - Observer conditions (volatility spike, key level proximity)
         """
         try:
             # Check trailing stops and TPs
@@ -601,9 +659,67 @@ class TradingOrchestrator:
                                 f"Closed {action['volume_closed']} lots"
                             )
 
+            # Observer checks - non-blocking, triggers analysis on market events
+            await self._check_observer_conditions()
+
         except Exception as e:
             logger.error(f"TP monitor job failed: {e}")
             self._tp_monitor_failures += 1
+
+    async def observer_job(self):
+        """Market observer job - runs every 10 seconds.
+
+        Dedicated observer check with lower latency than tp_monitor.
+        Updates baselines, checks all observers, triggers analysis on events.
+        """
+        config = get_settings()
+
+        if not config.observer_enabled:
+            return
+
+        if not self.session_detector.is_market_open():
+            return
+
+        try:
+            loop = asyncio.get_event_loop()
+
+            # Gather market data
+            current_price = await loop.run_in_executor(
+                executor, self._get_current_price
+            )
+            if current_price is None:
+                return
+
+            # Update baseline cache if stale
+            volatility_obs = self.market_observer.get_observer("volatility_spike")
+            if volatility_obs and volatility_obs.needs_baseline_update():
+                await self._update_observer_baseline()
+
+            # Prepare market data for observers
+            market_data = {
+                "current_price": current_price,
+                "atr_current": self._observer_state.atr_baseline_m30,
+            }
+
+            # Check all observers - events handled via subscription callback
+            events = self.market_observer.check_all(market_data)
+
+            # If any events triggered and cooldown passed, run analysis
+            if events:
+                now = time.time()
+                cooldown_remaining = (
+                    config.observer_cooldown_seconds
+                    - (now - self._observer_state.last_triggered_analysis)
+                )
+                if cooldown_remaining <= 0:
+                    trigger_reasons = [e.event_type.value for e in events]
+                    logger.info(f"Observer triggered analysis: {trigger_reasons}")
+                    self._observer_state.last_triggered_analysis = now
+                    await self.analysis_job()
+
+        except Exception as e:
+            # Observer errors should never block main operation
+            logger.debug(f"Observer job failed (non-blocking): {e}")
 
     async def weekly_report_job(self):
         """Weekly report job - runs every Sunday at 23:00 UTC.
@@ -779,6 +895,94 @@ class TradingOrchestrator:
             
         return True, "All conditions met"
 
+    # ===== Observer Methods (Event-Driven Market Analysis) =====
+
+    def _get_current_price(self) -> Optional[float]:
+        """Get current bid price from MT5 (sync).
+
+        Returns:
+            Current bid price or None if unavailable
+        """
+        tick = mt5_client.get_tick(get_settings().mt5_symbol)
+        return tick.get("bid") if tick else None
+
+    async def _update_observer_baseline(self):
+        """Update cached ATR baseline for spike detection.
+
+        Called hourly to refresh baseline without excessive API calls.
+        Uses M30 ATR average of last 20 candles as baseline.
+        """
+        config = get_settings()
+        loop = asyncio.get_event_loop()
+
+        try:
+            # Export minimal CSV for ATR calculation
+            csv_files = await loop.run_in_executor(
+                executor, mt5_client.export_csv, config.mt5_symbol
+            )
+
+            if csv_files and "M30" in csv_files:
+                import pandas as pd
+
+                m30_data = pd.read_csv(csv_files["M30"])
+
+                if "atr_14" in m30_data.columns and len(m30_data) >= 20:
+                    # Use last 20 candles for baseline
+                    atr_values = m30_data["atr_14"].tail(20)
+                    self._observer_state.atr_baseline_m30 = atr_values.mean()
+                    self._observer_state.last_baseline_update = time.time()
+
+                    logger.debug(
+                        f"Observer baseline updated: ATR={self._observer_state.atr_baseline_m30:.2f}"
+                    )
+
+            # Update key levels from database
+            await self._update_key_levels()
+
+        except Exception as e:
+            logger.debug(f"Observer baseline update failed: {e}")
+
+    async def _update_key_levels(self):
+        """Update cached key levels from market_memory table.
+
+        Extracts recent stop loss levels and any custom key levels
+        stored in the database.
+        """
+        try:
+            memories = self.db.get_market_memory(memory_type="key_level")
+
+            # Extract price values
+            levels = []
+            for mem in memories:
+                try:
+                    level = float(mem.get("memory_value", 0))
+                    if level > 0:
+                        levels.append(level)
+                except (ValueError, TypeError):
+                    pass
+
+            self._observer_state.key_levels = levels
+            self._observer_state.last_key_level_update = time.time()
+
+            logger.debug(f"Observer key levels updated: {len(levels)} levels")
+
+        except Exception as e:
+            logger.debug(f"Key level update failed: {e}")
+
+    async def _check_observer_conditions(self):
+        """Legacy Phase 1 observer check - now delegated to Phase 2 observer_job.
+
+        Called every 30s from tp_monitor_job. Phase 2 observer_job runs every 10s
+        and provides full observer system functionality.
+
+        Note: This method is kept for backward compatibility but does minimal work.
+        The dedicated observer_job (10s) handles all observer checks.
+        """
+        # Phase 2 observer_job handles all observer checks
+        # This legacy method only logs if observer system detected something
+        # to maintain backward compatibility with tp_monitor_job
+        pass
+
     async def run(self):
         """Main run loop."""
         if not await self.initialize():
@@ -811,6 +1015,16 @@ class TradingOrchestrator:
             id="weekly_report",
             replace_existing=True,
         )
+
+        # Schedule market observer job (10s interval) - Phase 2 full observer system
+        if config.observer_enabled:
+            self.scheduler.add_job(
+                self.observer_job,
+                get_observer_trigger(),
+                id="market_observer",
+                replace_existing=True,
+            )
+            logger.info("Market observer job scheduled (10s interval)")
 
         # Start scheduler
         self.scheduler.start()

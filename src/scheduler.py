@@ -78,3 +78,15 @@ def get_weekly_report_trigger() -> CronTrigger:
         CronTrigger for weekly schedule
     """
     return CronTrigger(day_of_week="sun", hour=23, minute=0)
+
+
+def get_observer_trigger() -> IntervalTrigger:
+    """Get interval trigger for market observer.
+
+    Triggers every 10 seconds for real-time event-driven monitoring.
+    Separate from tp_monitor (30s) for lower latency detection.
+
+    Returns:
+        IntervalTrigger for 10-second intervals
+    """
+    return IntervalTrigger(seconds=10)

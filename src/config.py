@@ -287,6 +287,23 @@ class Settings(BaseSettings):
         description="Enable/disable drawdown risk checks. Set False to bypass all drawdown limits."
     )
 
+    # Observer Settings (Event-Driven Market Observer)
+    observer_enabled: bool = Field(
+        default=True, description="Enable event-driven market observer"
+    )
+    observer_cooldown_seconds: int = Field(
+        default=900, ge=60, le=3600, description="Cooldown between triggered analyses"
+    )
+    observer_spike_threshold: float = Field(
+        default=1.8, ge=1.3, le=3.0, description="ATR ratio threshold for spike detection"
+    )
+    observer_key_level_atr_factor: float = Field(
+        default=1.0, ge=0.5, le=2.0, description="ATR multiplier for key level proximity"
+    )
+    observer_baseline_update_seconds: int = Field(
+        default=3600, ge=300, le=7200, description="Interval to update ATR baseline cache"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""
