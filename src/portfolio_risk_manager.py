@@ -117,8 +117,11 @@ class PortfolioRiskManager:
         
         balance = account_info['balance']
         open_trades = self.db.get_open_trades()
-        
+
+        logger.info(f"[PortfolioHeat] Starting calculation - Balance: ${balance:,.2f}, Open trades: {len(open_trades) if open_trades else 0}")
+
         if not open_trades:
+            logger.info("[PortfolioHeat] No open trades - returning green status")
             return PortfolioHeat(
                 total_exposure=0,
                 heat_percentage=0,
@@ -147,11 +150,19 @@ class PortfolioRiskManager:
             
             # Risk in pips
             risk_pips = abs(entry - sl)
-            
+
             # Risk in dollars (simplified for XAUUSD)
             # For gold: 1 lot = 100 oz, 1 pip = $0.10/oz = $10/lot
             risk_dollars = risk_pips * volume * 100
-            
+
+            logger.info(
+                f"[PortfolioHeat] Position #{trade['ticket']}: "
+                f"{symbol} {trade.get('action', 'N/A')} | "
+                f"Entry: {entry:.2f}, SL: {sl:.2f} | "
+                f"Vol: {volume} lots | "
+                f"Risk: {risk_pips:.2f} pips = ${risk_dollars:.2f}"
+            )
+
             position_risks.append(risk_dollars)
             positions_by_symbol[symbol].append({
                 'trade': trade,
@@ -170,6 +181,15 @@ class PortfolioRiskManager:
             positions_by_symbol, balance
         )
         
+        # Log calculation summary
+        logger.info(
+            f"[PortfolioHeat] Summary: "
+            f"Total Exposure: ${total_exposure:.2f} | "
+            f"Positions: {position_count} | "
+            f"Avg Risk: ${avg_position_risk:.2f} | "
+            f"Max Risk: ${max_position_risk:.2f}"
+        )
+
         # Determine risk status
         total_heat_with_correlation = heat_percentage + correlated_risk
         if total_heat_with_correlation >= self.max_portfolio_heat:
@@ -178,11 +198,13 @@ class PortfolioRiskManager:
             risk_status = 'yellow'
         else:
             risk_status = 'green'
-        
+
         logger.info(
-            f"Portfolio heat: {heat_percentage:.1f}% "
-            f"(+{correlated_risk:.1f}% correlated), "
-            f"Status: {risk_status}"
+            f"[PortfolioHeat] Final: "
+            f"Base Heat: {heat_percentage:.2f}% + Correlated: {correlated_risk:.2f}% = "
+            f"Total: {total_heat_with_correlation:.2f}% | "
+            f"Thresholds: warn={self.warning_heat*100:.0f}%, max={self.max_portfolio_heat*100:.0f}% | "
+            f"Status: {risk_status.upper()}"
         )
         
         return PortfolioHeat(
