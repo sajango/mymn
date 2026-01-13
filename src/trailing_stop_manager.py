@@ -11,6 +11,7 @@ Activation triggers:
 """
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from src.config import get_settings
@@ -425,8 +426,11 @@ class TrailingStopManager:
     def _estimate_close_values(self, trade: dict) -> tuple[float, float]:
         """Estimate close price and profit when deal history unavailable.
 
-        Uses conservative estimate: assumes SL hit (worst case).
-        For BUY: close at SL (loss), For SELL: close at SL (loss).
+        Smart estimation priority:
+        1. If trailing active → use trailing_stop_price (locked-in profit)
+        2. If breakeven activated → use breakeven_price (at least BE)
+        3. If TP levels triggered → estimate near highest triggered TP
+        4. Fallback → use midpoint between entry and SL (better than SL)
 
         Args:
             trade: Trade dict from database
@@ -438,18 +442,81 @@ class TrailingStopManager:
         sl = trade["stop_loss"]
         volume = trade["volume"]
         is_buy = trade["action"] == "BUY"
+        trailing_state = trade.get("trailing_state", "inactive")
 
-        # Conservative estimate: assume SL was hit
-        estimated_close = sl
+        # Priority 1: If trailing was active, use trailing stop price
+        # This represents locked-in profit level
+        if trailing_state == "trailing":
+            trailing_price = trade.get("trailing_stop_price")
+            if trailing_price:
+                estimated_close = trailing_price
+                logger.info(
+                    f"Estimation using trailing_stop_price={trailing_price}"
+                )
+                return self._calculate_profit(
+                    estimated_close, entry, volume, is_buy
+                )
 
-        # Calculate estimated profit based on SL distance
+        # Priority 2: If breakeven activated, use breakeven price
+        # Position was at least at breakeven when closed
+        if trailing_state in ("activated", "trailing"):
+            breakeven = trade.get("breakeven_price")
+            if breakeven:
+                estimated_close = breakeven
+                logger.info(f"Estimation using breakeven_price={breakeven}")
+                return self._calculate_profit(
+                    estimated_close, entry, volume, is_buy
+                )
+
+        # Priority 3: Check TP levels for context
+        tp_levels = self.db.get_tp_levels(trade["id"])
+        triggered_tps = [tp for tp in tp_levels if tp.get("triggered")]
+        if triggered_tps:
+            # Use highest triggered TP price as estimate
+            if is_buy:
+                best_tp = max(triggered_tps, key=lambda x: x["price"])
+            else:
+                best_tp = min(triggered_tps, key=lambda x: x["price"])
+            estimated_close = best_tp["price"]
+            logger.info(
+                f"Estimation using triggered TP level={best_tp['level']}"
+            )
+            return self._calculate_profit(
+                estimated_close, entry, volume, is_buy
+            )
+
+        # Priority 4: Fallback to midpoint (better than worst-case SL)
+        # Midpoint assumes random exit, not definite loss
+        tp = trade.get("take_profit")
+        if tp:
+            estimated_close = (entry + tp) / 2 if is_buy else (entry + tp) / 2
+            logger.info(f"Estimation using midpoint entry-TP={estimated_close}")
+        else:
+            # Last resort: midpoint between entry and SL
+            estimated_close = (entry + sl) / 2
+            logger.info(f"Estimation using midpoint entry-SL={estimated_close}")
+
+        return self._calculate_profit(estimated_close, entry, volume, is_buy)
+
+    def _calculate_profit(
+        self, close: float, entry: float, volume: float, is_buy: bool
+    ) -> tuple[float, float]:
+        """Calculate profit from close price.
+
+        Args:
+            close: Estimated close price
+            entry: Entry price
+            volume: Position volume in lots
+            is_buy: True for BUY, False for SELL
+
+        Returns:
+            Tuple of (close_price, profit)
+        """
         # XAUUSD contract: 1 lot = 100 oz (contract size = 100)
-        # profit = price_diff * volume * contract_size
-        contract_size = 100  # XAUUSD: 100 oz per lot
-        price_diff = estimated_close - entry if is_buy else entry - estimated_close
-        estimated_profit = price_diff * volume * contract_size
-
-        return estimated_close, round(estimated_profit, 2)
+        contract_size = 100
+        price_diff = close - entry if is_buy else entry - close
+        profit = price_diff * volume * contract_size
+        return close, round(profit, 2)
 
     def check_all_positions(self) -> list[dict]:
         """Check all open positions for trailing stop updates.
@@ -560,6 +627,96 @@ class TrailingStopManager:
             "trade_id": trade_id,
             "actions": actions,
         }
+
+    def sync_historical_positions(self, lookback_days: int = 7) -> dict:
+        """Scan MT5 history and sync positions closed while system offline.
+
+        Runs on startup to backfill database for positions that closed
+        when the system wasn't running (manual close, TP/SL hit offline).
+
+        Args:
+            lookback_days: Days to scan in MT5 history (default 7)
+
+        Returns:
+            Summary dict with synced_count and errors
+        """
+        import MetaTrader5 as mt5
+
+        MAGIC_NUMBER = 123456  # Same as TradeExecutor/RiskGuard
+
+        # Get open trades from database that might be stale
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            logger.info("No open trades in DB, skipping historical sync")
+            return {"synced_count": 0, "errors": []}
+
+        # Build ticket lookup
+        ticket_to_trade = {t["ticket"]: t for t in open_trades}
+
+        # Scan MT5 deal history
+        from_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        to_date = datetime.now(timezone.utc) + timedelta(days=1)
+
+        deals = mt5.history_deals_get(from_date, to_date)
+        if deals is None:
+            logger.warning("Could not retrieve MT5 deal history")
+            return {"synced_count": 0, "errors": ["MT5 history unavailable"]}
+
+        synced = 0
+        errors = []
+
+        # Find closing deals that match our tracked trades
+        for deal in deals:
+            # Only process OUT deals (position close) with our magic
+            if deal.entry != mt5.DEAL_ENTRY_OUT:
+                continue
+            if deal.magic != MAGIC_NUMBER:
+                continue
+
+            # Check if this deal's position is in our DB as still open
+            position_id = deal.position_id
+            if position_id not in ticket_to_trade:
+                continue
+
+            trade = ticket_to_trade[position_id]
+            trade_id = trade["id"]
+
+            # Get full close info using existing method
+            close_info = self.mt5.get_position_close_info(position_id)
+            if close_info:
+                total_profit = (
+                    close_info["profit"]
+                    + close_info.get("swap", 0)
+                    + close_info.get("commission", 0)
+                )
+                self.db.close_trade(
+                    trade_id=trade_id,
+                    close_price=close_info["close_price"],
+                    profit=total_profit,
+                )
+                logger.info(
+                    f"Synced historical close: trade={trade_id}, "
+                    f"ticket={position_id}, profit={total_profit:.2f}"
+                )
+            else:
+                # Fallback to estimation
+                est_close, est_profit = self._estimate_close_values(trade)
+                self.db.close_trade(
+                    trade_id=trade_id,
+                    close_price=est_close,
+                    profit=est_profit,
+                )
+                logger.warning(
+                    f"Synced with estimation: trade={trade_id}, "
+                    f"ticket={position_id}, est_profit={est_profit:.2f}"
+                )
+
+            synced += 1
+            # Remove from lookup to avoid reprocessing
+            del ticket_to_trade[position_id]
+
+        logger.info(f"Historical sync complete: {synced} trades updated")
+        return {"synced_count": synced, "errors": errors}
 
 
 # Lazy singleton

@@ -318,6 +318,15 @@ class TradingOrchestrator:
             logger.error(f"Invalid symbol: {config.mt5_symbol}")
             return False
 
+        # Sync positions closed while system offline (P3 fix)
+        sync_result = await loop.run_in_executor(
+            executor, self.trailing_manager.sync_historical_positions
+        )
+        if sync_result["synced_count"] > 0:
+            logger.info(
+                f"Startup sync: {sync_result['synced_count']} historical closes"
+            )
+
         # Initialize Telegram bot
         await self.bot.initialize()
         self.bot.set_execute_callback(self.on_execute)

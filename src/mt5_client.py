@@ -790,7 +790,7 @@ class MT5Client:
         return atr.iloc[-1] if not atr.empty else None
 
     def get_position_close_info(
-        self, ticket: int, lookback_days: int = 7, max_retries: int = 3
+        self, ticket: int, lookback_days: int = 7, max_retries: int = 5
     ) -> Optional[dict]:
         """Get close info for a position from deal history.
 
@@ -798,11 +798,12 @@ class MT5Client:
         the close price and profit from deal history.
 
         Uses retry logic with exponential backoff to handle MT5 sync delays.
+        Extended retry window (15.5s total) to accommodate manual close sync lag.
 
         Args:
             ticket: Original position ticket
             lookback_days: Days to search in history
-            max_retries: Number of retry attempts for deal history lookup
+            max_retries: Number of retry attempts (default 5: 0.5s + 1s + 2s + 4s + 8s = 15.5s)
 
         Returns:
             Dict with close_price, profit, close_reason or None if not found
@@ -811,13 +812,14 @@ class MT5Client:
         to_date = datetime.now(timezone.utc) + timedelta(days=1)
 
         # Retry with exponential backoff for MT5 sync delays
+        # Total wait: 0.5s + 1s + 2s + 4s + 8s = 15.5s (extended for manual close lag)
         deals = None
         for attempt in range(max_retries):
             deals = mt5.history_deals_get(from_date, to_date, position=ticket)
             if deals is not None and len(deals) > 0:
                 break
             if attempt < max_retries - 1:
-                delay = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s
+                delay = 0.5 * (2 ** attempt)  # 0.5s, 1s, 2s, 4s, 8s
                 logger.debug(f"No deals yet for {ticket}, retry {attempt + 1}/{max_retries} in {delay}s")
                 time.sleep(delay)
 
