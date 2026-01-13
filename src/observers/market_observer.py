@@ -7,16 +7,26 @@ Thread-safe for concurrent access from scheduler jobs.
 Phase 02 - Observer Enhancements:
 - Event aggregation and deduplication integration
 - Aggregated event subscriptions
+
+Phase 03 - Observer Telemetry:
+- Metrics collection (counters, gauges, histograms)
+- Latency tracking with nanosecond precision
+- Health monitoring with pass/degraded/unhealthy status
 """
 
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
 
 from src.observers.base_observer import BaseObserver, ObserverEvent
 from src.observers.event_aggregator import AggregatedEvent, EventAggregator
+from src.observers.observer_telemetry import (
+    HealthChecker,
+    LatencyTracer,
+    get_observer_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +59,19 @@ class MarketObserver:
         events = observer.check_all({"atr_current": 15.0})
     """
 
-    def __init__(self):
-        """Initialize market observer orchestrator."""
+    def __init__(self, enable_telemetry: bool = True):
+        """Initialize market observer orchestrator.
+
+        Args:
+            enable_telemetry: Enable metrics/telemetry collection (default True)
+        """
         self._observers: List[BaseObserver] = []
         self._subscribers: List[Callable[[ObserverEvent], None]] = []
         self._state = MarketObserverState()
         self._lock = threading.RLock()  # Thread-safe access to lists
         self._aggregator: Optional[EventAggregator] = None
+        self._enable_telemetry = enable_telemetry
+        self._health_checker = HealthChecker()
 
     def register_observer(self, observer: BaseObserver):
         """Register an observer for monitoring.
@@ -186,6 +202,7 @@ class MarketObserver:
             List of triggered ObserverEvents
         """
         events = []
+        metrics = get_observer_metrics() if self._enable_telemetry else None
 
         # Copy list to avoid holding lock during check
         with self._lock:
@@ -196,12 +213,35 @@ class MarketObserver:
                 continue
 
             try:
-                event = observer.check(market_data)
+                # Wrap check with latency tracing if telemetry enabled
+                if metrics:
+                    tags = {"observer": observer.name}
+                    with LatencyTracer(metrics, "processing_latency_ms", tags):
+                        event = observer.check(market_data)
+                    metrics.increment("events_processed", tags=tags)
+                else:
+                    event = observer.check(market_data)
+
                 if event:
                     events.append(event)
                     self._emit_event(event)
+                    if metrics:
+                        metrics.increment(
+                            "signals_generated", tags={"observer": observer.name}
+                        )
+
             except Exception as e:
                 logger.error(f"Observer {observer.name} check failed: {e}")
+                if metrics:
+                    metrics.increment(
+                        "errors",
+                        tags={"observer": observer.name, "error": type(e).__name__},
+                    )
+
+        # Update gauges if telemetry enabled
+        if metrics:
+            metrics.set_gauge("active_observers", len(observers))
+            metrics.set_gauge("events_in_batch", len(events))
 
         return events
 
@@ -282,6 +322,44 @@ class MarketObserver:
             "observers": observer_statuses,
             "aggregator": self._aggregator.get_status() if self._aggregator else None,
         }
+
+    def get_health(self) -> Dict[str, Any]:
+        """Get observer health status.
+
+        Returns:
+            Dict with healthy, status, error_rate, avg_latency_ms, checks, message
+        """
+        if not self._enable_telemetry:
+            return {
+                "healthy": True,
+                "status": "unknown",
+                "error_rate": 0.0,
+                "avg_latency_ms": 0.0,
+                "checks": {},
+                "message": "Telemetry disabled",
+            }
+
+        metrics = get_observer_metrics()
+        health = self._health_checker.check(metrics)
+        return health.to_dict()
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get observer metrics summary.
+
+        Returns:
+            Dict with name, timestamp, counters, gauges, histograms
+        """
+        if not self._enable_telemetry:
+            return {
+                "name": "observer",
+                "timestamp": time.time(),
+                "counters": {},
+                "gauges": {},
+                "histograms": {},
+                "message": "Telemetry disabled",
+            }
+
+        return get_observer_metrics().get_summary()
 
 
 # Singleton pattern for global access

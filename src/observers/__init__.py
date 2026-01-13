@@ -6,6 +6,9 @@ Provides:
 - KeyLevelObserver: Support/resistance proximity detection
 - MarketObserver: Orchestrator managing all observers
 - ObserverEvent: Event dataclass for observer notifications
+- MetricsCollector: Telemetry metrics collection (Phase 03)
+- LatencyTracer: Processing latency measurement (Phase 03)
+- HealthChecker: Observer health monitoring (Phase 03)
 """
 
 from src.observers.base_observer import (
@@ -15,6 +18,14 @@ from src.observers.base_observer import (
 )
 from src.observers.key_level_observer import KeyLevelObserver
 from src.observers.market_observer import MarketObserver, get_market_observer
+from src.observers.observer_telemetry import (
+    HealthChecker,
+    HealthStatus,
+    LatencyTracer,
+    MetricsCollector,
+    get_observer_metrics,
+    reset_observer_metrics,
+)
 from src.observers.volatility_observer import VolatilitySpikeObserver
 
 __all__ = [
@@ -25,4 +36,11 @@ __all__ = [
     "KeyLevelObserver",
     "MarketObserver",
     "get_market_observer",
+    # Phase 03 - Observer Telemetry
+    "MetricsCollector",
+    "LatencyTracer",
+    "HealthChecker",
+    "HealthStatus",
+    "get_observer_metrics",
+    "reset_observer_metrics",
 ]

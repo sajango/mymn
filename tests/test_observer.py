@@ -1968,3 +1968,865 @@ class TestOrchestratorAggregationIntegration:
 
         # Should log strong signal
         orchestrator._on_aggregated_event(agg_event)
+
+
+# ============================================================================
+# Phase 03: Observer Telemetry Tests
+# ============================================================================
+
+
+class TestMetricsCollectorInit:
+    """Tests for MetricsCollector initialization."""
+
+    def test_init_with_name(self):
+        """Test basic initialization with name."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        assert collector.name == "test"
+        assert len(collector.counters) == 0
+        assert len(collector.gauges) == 0
+        assert len(collector.histograms) == 0
+
+    def test_init_default_histogram_size(self):
+        """Test default histogram max size."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        assert collector._histogram_max_size == 1000
+
+
+class TestMetricsCollectorCounters:
+    """Tests for MetricsCollector counter operations."""
+
+    def test_increment_counter(self):
+        """Test counter increment."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.increment("events_processed")
+        collector.increment("events_processed")
+
+        assert collector.get_counter("events_processed") == 2
+
+    def test_increment_with_value(self):
+        """Test counter increment with custom value."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.increment("events_processed", 5)
+
+        assert collector.get_counter("events_processed") == 5
+
+    def test_increment_with_tags(self):
+        """Test counter with tags."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.increment("events_processed", tags={"observer": "spike"})
+        collector.increment("events_processed", tags={"observer": "level"})
+
+        assert collector.get_counter("events_processed", {"observer": "spike"}) == 1
+        assert collector.get_counter("events_processed", {"observer": "level"}) == 1
+
+    def test_decrement_counter(self):
+        """Test counter decrement."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.increment("active", 5)
+        collector.decrement("active", 2)
+
+        assert collector.get_counter("active") == 3
+
+    def test_get_nonexistent_counter(self):
+        """Test getting nonexistent counter returns 0."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        assert collector.get_counter("nonexistent") == 0
+
+
+class TestMetricsCollectorGauges:
+    """Tests for MetricsCollector gauge operations."""
+
+    def test_set_gauge(self):
+        """Test setting gauge value."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.set_gauge("active_observers", 3.0)
+
+        assert collector.get_gauge("active_observers") == 3.0
+
+    def test_set_gauge_overwrites(self):
+        """Test setting gauge overwrites previous value."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.set_gauge("active", 5.0)
+        collector.set_gauge("active", 3.0)
+
+        assert collector.get_gauge("active") == 3.0
+
+    def test_set_gauge_with_tags(self):
+        """Test setting gauge with tags."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.set_gauge("queue_depth", 10.0, tags={"queue": "main"})
+        collector.set_gauge("queue_depth", 5.0, tags={"queue": "backup"})
+
+        assert collector.get_gauge("queue_depth", {"queue": "main"}) == 10.0
+        assert collector.get_gauge("queue_depth", {"queue": "backup"}) == 5.0
+
+    def test_get_nonexistent_gauge(self):
+        """Test getting nonexistent gauge returns 0.0."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        assert collector.get_gauge("nonexistent") == 0.0
+
+
+class TestMetricsCollectorHistograms:
+    """Tests for MetricsCollector histogram operations."""
+
+    def test_record_histogram_value(self):
+        """Test recording histogram value."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.record("latency_ms", 1.5)
+        collector.record("latency_ms", 2.0)
+        collector.record("latency_ms", 1.0)
+
+        stats = collector.get_histogram_stats("latency_ms")
+
+        assert stats["count"] == 3
+        assert stats["min"] == 1.0
+        assert stats["max"] == 2.0
+        assert stats["avg"] == 1.5
+
+    def test_histogram_percentiles(self):
+        """Test histogram percentile calculations."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        # Add 100 values from 1 to 100
+        for i in range(1, 101):
+            collector.record("latency_ms", float(i))
+
+        stats = collector.get_histogram_stats("latency_ms")
+
+        assert stats["count"] == 100
+        # Percentiles use index-based calculation, allow ±1 tolerance
+        assert 49.0 <= stats["p50"] <= 52.0  # ~50th percentile
+        assert 94.0 <= stats["p95"] <= 96.0  # ~95th percentile
+        assert 98.0 <= stats["p99"] <= 100.0  # ~99th percentile
+
+    def test_histogram_bounded_size(self):
+        """Test histogram respects max size limit."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        collector._histogram_max_size = 10  # Small for testing
+
+        for i in range(20):
+            collector.record("latency_ms", float(i))
+
+        stats = collector.get_histogram_stats("latency_ms")
+
+        assert stats["count"] == 10
+        # Should keep last 10 values (10-19)
+        assert stats["min"] == 10.0
+        assert stats["max"] == 19.0
+
+    def test_histogram_with_tags(self):
+        """Test histogram with tags."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        collector.record("latency_ms", 1.0, tags={"observer": "spike"})
+        collector.record("latency_ms", 2.0, tags={"observer": "spike"})
+        collector.record("latency_ms", 5.0, tags={"observer": "level"})
+
+        spike_stats = collector.get_histogram_stats("latency_ms", {"observer": "spike"})
+        level_stats = collector.get_histogram_stats("latency_ms", {"observer": "level"})
+
+        assert spike_stats["count"] == 2
+        assert level_stats["count"] == 1
+
+    def test_empty_histogram_stats(self):
+        """Test stats for nonexistent histogram."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        stats = collector.get_histogram_stats("nonexistent")
+
+        assert stats == {"count": 0}
+
+
+class TestMetricsCollectorSummary:
+    """Tests for MetricsCollector summary output."""
+
+    def test_get_summary_structure(self):
+        """Test summary has correct structure."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        collector.increment("counter1")
+        collector.set_gauge("gauge1", 1.5)
+        collector.record("hist1", 0.5)
+
+        summary = collector.get_summary()
+
+        assert "name" in summary
+        assert "timestamp" in summary
+        assert "counters" in summary
+        assert "gauges" in summary
+        assert "histograms" in summary
+        assert summary["name"] == "test"
+
+    def test_get_summary_json_serializable(self):
+        """Test summary is JSON serializable."""
+        import json
+
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        collector.increment("counter1")
+        collector.set_gauge("gauge1", 1.5)
+        collector.record("hist1", 0.5)
+
+        summary = collector.get_summary()
+
+        # Should not raise
+        json_str = json.dumps(summary)
+        assert isinstance(json_str, str)
+
+
+class TestMetricsCollectorReset:
+    """Tests for MetricsCollector reset functionality."""
+
+    def test_reset_clears_all(self):
+        """Test reset clears all metrics."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        collector.increment("counter1")
+        collector.set_gauge("gauge1", 1.5)
+        collector.record("hist1", 0.5)
+
+        collector.reset()
+
+        assert len(collector.counters) == 0
+        assert len(collector.gauges) == 0
+        assert len(collector.histograms) == 0
+
+
+class TestMetricsCollectorTagFormatting:
+    """Tests for metric key formatting with tags."""
+
+    def test_make_key_no_tags(self):
+        """Test key without tags."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        key = MetricsCollector._make_key("metric", None)
+        assert key == "metric"
+
+    def test_make_key_with_tags(self):
+        """Test key with tags."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        key = MetricsCollector._make_key("metric", {"a": "1", "b": "2"})
+        # Tags should be sorted
+        assert key == "metric{a=1,b=2}"
+
+    def test_make_key_empty_tags(self):
+        """Test key with empty tags dict."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        key = MetricsCollector._make_key("metric", {})
+        assert key == "metric"
+
+
+class TestLatencyTracer:
+    """Tests for LatencyTracer context manager."""
+
+    def test_tracer_records_latency(self):
+        """Test tracer records elapsed time."""
+        from src.observers.observer_telemetry import LatencyTracer, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        with LatencyTracer(collector, "processing_latency_ms"):
+            time.sleep(0.01)  # 10ms
+
+        stats = collector.get_histogram_stats("processing_latency_ms")
+
+        assert stats["count"] == 1
+        assert stats["min"] >= 10  # At least 10ms
+
+    def test_tracer_with_tags(self):
+        """Test tracer records with tags."""
+        from src.observers.observer_telemetry import LatencyTracer, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        with LatencyTracer(collector, "latency_ms", tags={"observer": "spike"}):
+            time.sleep(0.001)
+
+        stats = collector.get_histogram_stats("latency_ms", {"observer": "spike"})
+
+        assert stats["count"] == 1
+
+    def test_tracer_elapsed_during_execution(self):
+        """Test elapsed_ms property during execution."""
+        from src.observers.observer_telemetry import LatencyTracer, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        with LatencyTracer(collector, "latency_ms") as tracer:
+            time.sleep(0.005)  # 5ms
+            elapsed = tracer.elapsed_ms
+            assert elapsed >= 5
+
+    def test_tracer_elapsed_before_enter(self):
+        """Test elapsed_ms returns 0 before entering."""
+        from src.observers.observer_telemetry import LatencyTracer, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        tracer = LatencyTracer(collector, "latency_ms")
+
+        assert tracer.elapsed_ms == 0.0
+
+    def test_tracer_exception_still_records(self):
+        """Test latency recorded even if exception raised."""
+        from src.observers.observer_telemetry import LatencyTracer, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        try:
+            with LatencyTracer(collector, "latency_ms"):
+                time.sleep(0.001)
+                raise ValueError("Test error")
+        except ValueError:
+            pass
+
+        stats = collector.get_histogram_stats("latency_ms")
+        assert stats["count"] == 1
+
+
+class TestHealthStatus:
+    """Tests for HealthStatus dataclass."""
+
+    def test_health_status_to_dict(self):
+        """Test HealthStatus to_dict method."""
+        from src.observers.observer_telemetry import HealthStatus
+
+        status = HealthStatus(
+            healthy=True,
+            status="healthy",
+            error_rate=0.001,
+            avg_latency_ms=2.5,
+            checks={"error_rate": True, "latency": True},
+            message="All checks passed",
+        )
+
+        d = status.to_dict()
+
+        assert d["healthy"] is True
+        assert d["status"] == "healthy"
+        assert d["error_rate"] == 0.001
+        assert d["avg_latency_ms"] == 2.5
+        assert d["checks"]["error_rate"] is True
+        assert d["message"] == "All checks passed"
+
+
+class TestHealthChecker:
+    """Tests for HealthChecker class."""
+
+    def test_init_defaults(self):
+        """Test default initialization."""
+        from src.observers.observer_telemetry import HealthChecker
+
+        checker = HealthChecker()
+
+        assert checker.max_error_rate == 0.01
+        assert checker.max_latency_ms == 50.0
+
+    def test_init_custom_thresholds(self):
+        """Test custom threshold initialization."""
+        from src.observers.observer_telemetry import HealthChecker
+
+        checker = HealthChecker(max_error_rate=0.05, max_latency_ms=100.0)
+
+        assert checker.max_error_rate == 0.05
+        assert checker.max_latency_ms == 100.0
+
+    def test_check_healthy_status(self):
+        """Test healthy status when all checks pass."""
+        from src.observers.observer_telemetry import HealthChecker, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        # Add good metrics - many successes, no errors
+        for _ in range(100):
+            collector.increment("events_processed")
+            collector.record("processing_latency_ms", 1.0)  # Fast latency
+
+        checker = HealthChecker()
+        status = checker.check(collector)
+
+        assert status.healthy is True
+        assert status.status == "healthy"
+        assert status.error_rate == 0.0
+        assert status.checks["error_rate"] is True
+        assert status.checks["latency"] is True
+
+    def test_check_unhealthy_high_error_rate(self):
+        """Test unhealthy status with high error rate."""
+        from src.observers.observer_telemetry import HealthChecker, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        # 50% error rate
+        for _ in range(50):
+            collector.increment("events_processed")
+        for _ in range(50):
+            collector.increment("errors")
+
+        checker = HealthChecker(max_error_rate=0.01)
+        status = checker.check(collector)
+
+        assert status.healthy is False
+        assert status.status == "unhealthy"
+        assert status.error_rate == 1.0  # 50 errors / 50 processed
+        assert status.checks["error_rate"] is False
+
+    def test_check_degraded_high_latency(self):
+        """Test degraded status with high latency."""
+        from src.observers.observer_telemetry import HealthChecker, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        for _ in range(10):
+            collector.increment("events_processed")
+            collector.record("processing_latency_ms", 100.0)  # Slow
+
+        checker = HealthChecker(max_latency_ms=50.0)
+        status = checker.check(collector)
+
+        # Should be degraded (high latency but no critical errors)
+        assert status.healthy is True  # Critical checks pass
+        assert status.status == "degraded"
+        assert status.checks["latency"] is False
+
+    def test_check_event_loss_critical(self):
+        """Test unhealthy status with event loss."""
+        from src.observers.observer_telemetry import HealthChecker, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        collector.increment("events_processed", 100)
+        collector.increment("event_loss", 5)  # Any event loss is critical
+
+        checker = HealthChecker()
+        status = checker.check(collector)
+
+        assert status.healthy is False
+        assert status.status == "unhealthy"
+        assert status.checks["event_loss"] is False
+
+    def test_check_empty_metrics(self):
+        """Test check with empty metrics."""
+        from src.observers.observer_telemetry import HealthChecker, MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        checker = HealthChecker()
+        status = checker.check(collector)
+
+        # Empty metrics should be healthy
+        assert status.healthy is True
+        assert status.error_rate == 0.0
+
+
+class TestObserverMetricsSingleton:
+    """Tests for observer metrics singleton."""
+
+    def setup_method(self):
+        """Reset singleton before each test."""
+        from src.observers.observer_telemetry import reset_observer_metrics
+
+        reset_observer_metrics()
+
+    def test_get_observer_metrics_returns_collector(self):
+        """Test get_observer_metrics returns MetricsCollector."""
+        from src.observers.observer_telemetry import (
+            MetricsCollector,
+            get_observer_metrics,
+        )
+
+        metrics = get_observer_metrics()
+
+        assert isinstance(metrics, MetricsCollector)
+        assert metrics.name == "observer"
+
+    def test_get_observer_metrics_singleton(self):
+        """Test get_observer_metrics returns same instance."""
+        from src.observers.observer_telemetry import get_observer_metrics
+
+        metrics1 = get_observer_metrics()
+        metrics2 = get_observer_metrics()
+
+        assert metrics1 is metrics2
+
+    def test_reset_observer_metrics(self):
+        """Test reset_observer_metrics creates new instance."""
+        from src.observers.observer_telemetry import (
+            get_observer_metrics,
+            reset_observer_metrics,
+        )
+
+        metrics1 = get_observer_metrics()
+        metrics1.increment("test_counter")
+
+        reset_observer_metrics()
+
+        metrics2 = get_observer_metrics()
+
+        assert metrics1 is not metrics2
+        assert metrics2.get_counter("test_counter") == 0
+
+
+class TestMetricsCollectorThreadSafety:
+    """Tests for MetricsCollector thread safety."""
+
+    def test_concurrent_increment(self):
+        """Test concurrent counter increments."""
+        import threading
+
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        num_threads = 10
+        increments_per_thread = 100
+
+        def increment_task():
+            for _ in range(increments_per_thread):
+                collector.increment("counter")
+
+        threads = [threading.Thread(target=increment_task) for _ in range(num_threads)]
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        expected = num_threads * increments_per_thread
+        assert collector.get_counter("counter") == expected
+
+    def test_concurrent_histogram_record(self):
+        """Test concurrent histogram records."""
+        import threading
+
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+        num_threads = 5
+        records_per_thread = 50
+
+        def record_task():
+            for i in range(records_per_thread):
+                collector.record("latency", float(i))
+
+        threads = [threading.Thread(target=record_task) for _ in range(num_threads)]
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        stats = collector.get_histogram_stats("latency")
+        expected = num_threads * records_per_thread
+        assert stats["count"] == expected
+
+
+class TestMarketObserverTelemetryIntegration:
+    """Tests for MarketObserver telemetry integration."""
+
+    def setup_method(self):
+        """Reset singletons before each test."""
+        from src.observers.market_observer import reset_market_observer
+        from src.observers.observer_telemetry import reset_observer_metrics
+
+        reset_market_observer()
+        reset_observer_metrics()
+
+    def test_market_observer_telemetry_enabled(self):
+        """Test MarketObserver has telemetry enabled by default."""
+        from src.observers.market_observer import MarketObserver
+
+        observer = MarketObserver()
+
+        assert observer._enable_telemetry is True
+        assert observer._health_checker is not None
+
+    def test_market_observer_telemetry_disabled(self):
+        """Test MarketObserver can disable telemetry."""
+        from src.observers.market_observer import MarketObserver
+
+        observer = MarketObserver(enable_telemetry=False)
+
+        assert observer._enable_telemetry is False
+
+    def test_check_all_records_metrics(self):
+        """Test check_all records telemetry metrics."""
+        from src.observers.market_observer import MarketObserver
+        from src.observers.observer_telemetry import get_observer_metrics
+        from src.observers.volatility_observer import VolatilitySpikeObserver
+
+        observer = MarketObserver()
+        vol_obs = VolatilitySpikeObserver(spike_threshold=1.8, cooldown_seconds=0)
+        vol_obs.set_baseline(10.0)
+        observer.register_observer(vol_obs)
+
+        observer.check_all({"atr_current": 15.0})  # No spike
+
+        metrics = get_observer_metrics()
+        summary = metrics.get_summary()
+
+        # Should have recorded events_processed
+        assert "events_processed{observer=volatility_spike}" in summary["counters"]
+        # Should have recorded latency
+        assert (
+            "processing_latency_ms{observer=volatility_spike}" in summary["histograms"]
+        )
+
+    def test_check_all_records_signals_generated(self):
+        """Test check_all records signals_generated when event triggered."""
+        from src.observers.market_observer import MarketObserver
+        from src.observers.observer_telemetry import get_observer_metrics
+        from src.observers.volatility_observer import VolatilitySpikeObserver
+
+        observer = MarketObserver()
+        vol_obs = VolatilitySpikeObserver(spike_threshold=1.8, cooldown_seconds=0)
+        vol_obs.set_baseline(10.0)
+        observer.register_observer(vol_obs)
+
+        observer.check_all({"atr_current": 20.0})  # Spike!
+
+        metrics = get_observer_metrics()
+        summary = metrics.get_summary()
+
+        assert "signals_generated{observer=volatility_spike}" in summary["counters"]
+
+    def test_check_all_records_errors(self):
+        """Test check_all records errors on exception."""
+        from unittest.mock import MagicMock
+
+        from src.observers.base_observer import BaseObserver
+        from src.observers.market_observer import MarketObserver
+        from src.observers.observer_telemetry import get_observer_metrics
+
+        # Create a failing observer
+        class FailingObserver(BaseObserver):
+            def check(self, market_data):
+                raise ValueError("Test error")
+
+            def reset_state(self):
+                pass
+
+        observer = MarketObserver()
+        failing_obs = FailingObserver(name="failing")
+        observer.register_observer(failing_obs)
+
+        observer.check_all({})
+
+        metrics = get_observer_metrics()
+        summary = metrics.get_summary()
+
+        # Should have recorded error
+        error_key = "errors{error=ValueError,observer=failing}"
+        assert error_key in summary["counters"]
+
+    def test_check_all_updates_gauges(self):
+        """Test check_all updates active_observers and events_in_batch gauges."""
+        from src.observers.market_observer import MarketObserver
+        from src.observers.observer_telemetry import get_observer_metrics
+        from src.observers.volatility_observer import VolatilitySpikeObserver
+
+        observer = MarketObserver()
+        vol_obs = VolatilitySpikeObserver()
+        observer.register_observer(vol_obs)
+
+        observer.check_all({})
+
+        metrics = get_observer_metrics()
+        summary = metrics.get_summary()
+
+        assert summary["gauges"]["active_observers"] == 1.0
+        assert "events_in_batch" in summary["gauges"]
+
+    def test_get_health_method(self):
+        """Test get_health method returns health status."""
+        from src.observers.market_observer import MarketObserver
+        from src.observers.observer_telemetry import get_observer_metrics
+        from src.observers.volatility_observer import VolatilitySpikeObserver
+
+        observer = MarketObserver()
+        vol_obs = VolatilitySpikeObserver()
+        observer.register_observer(vol_obs)
+
+        # Generate some metrics
+        for _ in range(10):
+            observer.check_all({"atr_current": 10.0})
+
+        health = observer.get_health()
+
+        assert "healthy" in health
+        assert "status" in health
+        assert "error_rate" in health
+        assert "avg_latency_ms" in health
+        assert "checks" in health
+
+    def test_get_health_telemetry_disabled(self):
+        """Test get_health returns unknown status when telemetry disabled."""
+        from src.observers.market_observer import MarketObserver
+
+        observer = MarketObserver(enable_telemetry=False)
+        health = observer.get_health()
+
+        assert health["status"] == "unknown"
+        assert health["message"] == "Telemetry disabled"
+
+    def test_get_metrics_method(self):
+        """Test get_metrics method returns metrics summary."""
+        from src.observers.market_observer import MarketObserver
+        from src.observers.volatility_observer import VolatilitySpikeObserver
+
+        observer = MarketObserver()
+        vol_obs = VolatilitySpikeObserver()
+        observer.register_observer(vol_obs)
+
+        observer.check_all({"atr_current": 10.0})
+
+        metrics = observer.get_metrics()
+
+        assert "name" in metrics
+        assert "timestamp" in metrics
+        assert "counters" in metrics
+        assert "gauges" in metrics
+        assert "histograms" in metrics
+
+    def test_get_metrics_telemetry_disabled(self):
+        """Test get_metrics returns empty when telemetry disabled."""
+        from src.observers.market_observer import MarketObserver
+
+        observer = MarketObserver(enable_telemetry=False)
+        metrics = observer.get_metrics()
+
+        assert metrics["message"] == "Telemetry disabled"
+        assert metrics["counters"] == {}
+        assert metrics["gauges"] == {}
+        assert metrics["histograms"] == {}
+
+
+class TestTelemetryBenchmark:
+    """Tests for telemetry performance overhead."""
+
+    def setup_method(self):
+        """Reset singletons before each test."""
+        from src.observers.market_observer import reset_market_observer
+        from src.observers.observer_telemetry import reset_observer_metrics
+
+        reset_market_observer()
+        reset_observer_metrics()
+
+    def test_telemetry_overhead_below_threshold(self):
+        """Test telemetry adds <0.5ms overhead per check cycle."""
+        from src.observers.market_observer import MarketObserver
+        from src.observers.volatility_observer import VolatilitySpikeObserver
+
+        # Observer with telemetry
+        observer_with = MarketObserver(enable_telemetry=True)
+        vol_obs1 = VolatilitySpikeObserver()
+        vol_obs1.set_baseline(10.0)
+        observer_with.register_observer(vol_obs1)
+
+        # Observer without telemetry
+        observer_without = MarketObserver(enable_telemetry=False)
+        vol_obs2 = VolatilitySpikeObserver()
+        vol_obs2.set_baseline(10.0)
+        observer_without.register_observer(vol_obs2)
+
+        market_data = {"atr_current": 15.0}
+
+        # Warmup
+        for _ in range(100):
+            observer_with.check_all(market_data)
+            observer_without.check_all(market_data)
+
+        # Benchmark
+        iterations = 1000
+
+        start = time.time()
+        for _ in range(iterations):
+            observer_with.check_all(market_data)
+        time_with = (time.time() - start) * 1000  # ms
+
+        start = time.time()
+        for _ in range(iterations):
+            observer_without.check_all(market_data)
+        time_without = (time.time() - start) * 1000  # ms
+
+        overhead_per_iteration = (time_with - time_without) / iterations
+
+        # Telemetry overhead should be < 0.5ms per check
+        assert (
+            overhead_per_iteration < 0.5
+        ), f"Telemetry overhead {overhead_per_iteration:.3f}ms exceeds 0.5ms target"
+
+    def test_metrics_collector_operations_fast(self):
+        """Test individual metric operations are fast."""
+        from src.observers.observer_telemetry import MetricsCollector
+
+        collector = MetricsCollector(name="test")
+
+        iterations = 10000
+
+        # Benchmark increment
+        start = time.time()
+        for _ in range(iterations):
+            collector.increment("counter")
+        increment_time = (time.time() - start) * 1000 / iterations
+
+        # Benchmark set_gauge
+        start = time.time()
+        for _ in range(iterations):
+            collector.set_gauge("gauge", 1.0)
+        gauge_time = (time.time() - start) * 1000 / iterations
+
+        # Benchmark record
+        start = time.time()
+        for _ in range(iterations):
+            collector.record("histogram", 1.0)
+        record_time = (time.time() - start) * 1000 / iterations
+
+        # Each operation should be < 0.1ms
+        assert (
+            increment_time < 0.1
+        ), f"Increment time {increment_time:.4f}ms exceeds 0.1ms"
+        assert gauge_time < 0.1, f"Gauge time {gauge_time:.4f}ms exceeds 0.1ms"
+        assert record_time < 0.1, f"Record time {record_time:.4f}ms exceeds 0.1ms"
