@@ -331,7 +331,8 @@ class MultiTPManager:
             'extreme_volatility': 0.7
         }
         
-        # Confidence adjustments
+        # Confidence adjustments (expects 0-100 scale)
+        confidence = max(0, min(100, confidence))  # Clamp to valid range
         conf_multiplier = 0.8 + (confidence / 100) * 0.4  # 0.8 to 1.2
         
         # Volatility adjustments

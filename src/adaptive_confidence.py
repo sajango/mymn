@@ -64,7 +64,7 @@ class AdaptiveThresholds:
         entry_minimum: Minimum confidence for any trade entry (default: 50)
         full_position: Confidence threshold for 100% position size (default: 75)
         direction_change: Min confidence for reversal trades (default: 80)
-        position_modifier: Streak-based position size modifier (0.4-1.0)
+        position_modifier: Streak-based position size modifier (0.5-1.0, clamped to 0.4 min)
         calculated_at: Timestamp of calculation
         trade_count: Number of trades used in calculation
         validation_score: Cross-validation expectancy score

@@ -251,7 +251,11 @@ class MarketRegimeDetector:
                 return RegimeType.RANGING_WIDE
     
     def _calculate_confidence_modifier(self, regime: RegimeType, volatility: str) -> int:
-        """Calculate confidence adjustment based on regime."""
+        """Calculate confidence adjustment based on regime.
+
+        Returns:
+            int: Modifier value from -25 (extreme volatility) to +10 (strong trend)
+        """
         modifiers = {
             RegimeType.STRONG_TREND_UP: 10,
             RegimeType.STRONG_TREND_DOWN: 10,

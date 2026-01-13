@@ -57,23 +57,28 @@ class RiskAdjustment:
 
 class PortfolioRiskManager:
     """Manages portfolio-level risk across all positions."""
-    
-    def __init__(self, mt5: Optional[MT5Client] = None, 
+
+    # Correlation thresholds (0-1 scale)
+    CORRELATION_SIGNIFICANT = 0.3   # Report as risk factor
+    CORRELATION_STRONG = 0.5        # Apply risk impact calculation
+    CORRELATION_EXTREME = 0.7       # Reduce position size
+
+    def __init__(self, mt5: Optional[MT5Client] = None,
                  db: Optional[Database] = None):
         self._mt5 = mt5
         self._db = db
-        
+
         # Risk thresholds (as percentage 0-100)
         self.max_portfolio_heat = 6.0       # Max 6% of account at risk
         self.warning_heat = 4.0             # Warning at 4%
         self.max_positions = 3              # Max concurrent positions
         self.max_correlated_risk = 8.0      # Max 8% with correlations
-        
+
         # Performance-based adjustments (all percentages use 0-100 scale)
         self.win_rate_target = 40.0         # Target 40% win rate
         self.profit_factor_target = 1.5     # Target 1.5 profit factor
         self.max_consecutive_losses = 3     # Reduce after 3 losses
-        
+
         # Correlation matrix (simplified for gold pairs)
         self.correlation_matrix = {
             ('XAUUSD', 'XAUEUR'): 0.95,
@@ -242,7 +247,7 @@ class PortfolioRiskManager:
                 # Get correlation
                 correlation = self._get_correlation(symbol1, symbol2)
                 
-                if abs(correlation) > 0.3:  # Significant correlation
+                if abs(correlation) > self.CORRELATION_SIGNIFICANT:
                     # Calculate overlapping risk
                     risk1 = sum(p['risk'] for p in positions_by_symbol[symbol1])
                     risk2 = sum(p['risk'] for p in positions_by_symbol[symbol2])
@@ -315,7 +320,7 @@ class PortfolioRiskManager:
         correlation_impact = 0
         for trade in open_trades:
             correlation = self._get_correlation(symbol, trade['symbol'])
-            if abs(correlation) > 0.5:
+            if abs(correlation) > self.CORRELATION_STRONG:
                 correlation_impact += abs(correlation) * new_risk_pct * 0.5
         
         total_heat_with_correlation = new_total_heat + correlation_impact
@@ -507,7 +512,7 @@ class PortfolioRiskManager:
         open_trades = self.db.get_open_trades()
         for trade in open_trades:
             correlation = self._get_correlation(symbol, trade['symbol'])
-            if abs(correlation) > 0.7:
+            if abs(correlation) > self.CORRELATION_EXTREME:
                 max_lots *= (1 - abs(correlation) * 0.3)
                 warnings.append(
                     f'High correlation with {trade["symbol"]} '
@@ -625,11 +630,11 @@ class PortfolioRiskManager:
         for i in range(len(symbols)):
             for j in range(i + 1, len(symbols)):
                 corr = self._get_correlation(symbols[i], symbols[j])
-                if abs(corr) > 0.3:
+                if abs(corr) > self.CORRELATION_SIGNIFICANT:
                     correlations.append({
                         'pair': f"{symbols[i]}/{symbols[j]}",
                         'correlation': corr,
-                        'risk': 'High' if abs(corr) > 0.7 else 'Medium'
+                        'risk': 'High' if abs(corr) > self.CORRELATION_EXTREME else 'Medium'
                     })
         
         return correlations

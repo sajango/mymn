@@ -55,11 +55,12 @@ class VolatilityManager:
         from src.config import get_settings
         self.settings = get_settings()
         
-        # Volatility thresholds
-        self.compression_threshold = 0.7   # 70% of average = compression
-        self.low_threshold = 0.85
-        self.high_threshold = 1.3
-        self.extreme_threshold = 1.8
+        # Volatility thresholds (ATR ratio to baseline average)
+        # Values < 1.0 = below average, values > 1.0 = above average
+        self.compression_ratio = 0.7   # ATR < 70% of average = compression
+        self.low_ratio = 0.85          # ATR < 85% of average = low volatility
+        self.high_ratio = 1.3          # ATR > 130% of average = high volatility
+        self.extreme_ratio = 1.8       # ATR > 180% of average = extreme volatility
         
         # ATR lookback periods
         self.atr_fast = 10
@@ -305,17 +306,17 @@ class VolatilityManager:
     def _determine_volatility_state(self, ratio: float, percentile: int) -> VolatilityState:
         """Determine current volatility state."""
         # Check for compression first
-        if ratio < self.compression_threshold and percentile < 20:
+        if ratio < self.compression_ratio and percentile < 20:
             return VolatilityState.COMPRESSION
         
         # Then check extremes
-        if ratio > self.extreme_threshold or percentile > 95:
+        if ratio > self.extreme_ratio or percentile > 95:
             return VolatilityState.EXTREME
-        elif ratio > self.high_threshold or percentile > 85:
+        elif ratio > self.high_ratio or percentile > 85:
             return VolatilityState.HIGH
         elif percentile > 70:
             return VolatilityState.ELEVATED
-        elif ratio < self.low_threshold or percentile < 30:
+        elif ratio < self.low_ratio or percentile < 30:
             return VolatilityState.LOW
         else:
             return VolatilityState.NORMAL

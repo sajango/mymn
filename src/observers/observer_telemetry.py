@@ -338,9 +338,9 @@ class HealthChecker:
         """Initialize health checker.
 
         Args:
-            max_error_rate: Maximum acceptable error rate (default 1%)
+            max_error_rate: Maximum acceptable error rate as decimal (0.01 = 1%)
             max_latency_ms: Maximum acceptable latency (default 50ms)
-            degraded_error_rate: Error rate threshold for degraded (default 5%)
+            degraded_error_rate: Error rate threshold for degraded as decimal (0.05 = 5%)
         """
         self.max_error_rate = max_error_rate
         self.max_latency_ms = max_latency_ms
