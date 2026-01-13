@@ -630,8 +630,12 @@ class TradeSimulator:
         return {"reason": reason, "price": close_price}
 
     def _random_slippage(self) -> float:
-        """Generate random slippage using numpy RNG."""
-        max_slip = self.config.slippage_pips * 0.01
+        """Generate random slippage using numpy RNG.
+
+        Note: Pip size is 0.1 for XAUUSD (1 pip = $0.10 per 0.01 lot)
+        """
+        pip_size = 0.1  # XAUUSD pip size
+        max_slip = self.config.slippage_pips * pip_size
         return float(self._rng.uniform(-max_slip * 0.5, max_slip))
 
 

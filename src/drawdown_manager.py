@@ -66,6 +66,11 @@ class DrawdownManager:
             self._settings = get_settings()
         return self._settings
 
+    @property
+    def recovery_threshold(self) -> float:
+        """Recovery mode threshold as percentage (default 5%)."""
+        return getattr(self.config, "recovery_mode_threshold", 5.0)
+
     def validate(self, account_balance: float) -> DrawdownCheckResult:
         """Check if trading is allowed based on drawdown limits.
 
@@ -389,7 +394,7 @@ class DrawdownManager:
     def _get_position_modifier(self, state: dict, balance: float) -> float:
         """Calculate position size modifier based on risk state."""
         peak = state.get("peak_balance", balance)
-        recovery_threshold = getattr(self.config, "recovery_mode_threshold", 5.0)
+        recovery_threshold = self.recovery_threshold
 
         # Drawdown from peak
         if peak > 0:
@@ -417,7 +422,7 @@ class DrawdownManager:
     def _get_status(self, state: dict, balance: float) -> DrawdownStatus:
         """Determine current drawdown status."""
         peak = state.get("peak_balance", balance)
-        recovery_threshold = getattr(self.config, "recovery_mode_threshold", 5.0)
+        recovery_threshold = self.recovery_threshold
 
         if peak > 0:
             drawdown_pct = ((peak - balance) / peak) * 100

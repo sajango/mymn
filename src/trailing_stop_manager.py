@@ -443,9 +443,11 @@ class TrailingStopManager:
         estimated_close = sl
 
         # Calculate estimated profit based on SL distance
-        # For XAUUSD: 1 lot = 100 oz, profit = price_diff * volume * 100
+        # XAUUSD contract: 1 lot = 100 oz (contract size = 100)
+        # profit = price_diff * volume * contract_size
+        contract_size = 100  # XAUUSD: 100 oz per lot
         price_diff = estimated_close - entry if is_buy else entry - estimated_close
-        estimated_profit = price_diff * volume * 100  # Simplified for gold
+        estimated_profit = price_diff * volume * contract_size
 
         return estimated_close, round(estimated_profit, 2)
 

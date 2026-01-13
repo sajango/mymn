@@ -632,6 +632,10 @@ def _normalize_signal_data(data: dict) -> dict:
                     signal["confidence"] = confidence_map[conf_upper]
                     logger.debug(f"Normalized: confidence '{conf}' -> {signal['confidence']}")
 
+            # Final bounds validation (ensure 0-100 range)
+            if isinstance(signal.get("confidence"), (int, float)):
+                signal["confidence"] = max(0, min(100, int(signal["confidence"])))
+
         # Map risk_reward_ratio -> risk_reward
         if "risk_reward_ratio" in signal and "risk_reward" not in signal:
             signal["risk_reward"] = signal.pop("risk_reward_ratio")

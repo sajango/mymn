@@ -94,7 +94,9 @@ class SpreadChecker:
 
         if entry_price and not spread_ok:
             # Adjust for spread impact
-            spread_adjustment = current_spread * 0.1  # Convert pips to price for gold
+            # XAUUSD: 1 pip = 0.1 price units (e.g., 2 pips = 0.2 price change)
+            pip_size = 0.1  # XAUUSD pip size
+            spread_adjustment = current_spread * pip_size
 
             if is_buy:
                 adjusted_entry = entry_price + spread_adjustment

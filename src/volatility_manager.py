@@ -50,7 +50,15 @@ class VolatilityProfile:
 
 class VolatilityManager:
     """Manages volatility analysis and adaptive adjustments."""
-    
+
+    # Timeframe weights for multi-timeframe analysis
+    # Higher timeframes get more weight for position sizing decisions
+    TIMEFRAME_WEIGHTS = {
+        'H4': 0.5,   # 4-hour: primary weight (longer-term trend)
+        'H1': 0.3,   # 1-hour: secondary weight
+        'M30': 0.2   # 30-min: tertiary weight (noise filter)
+    }
+
     def __init__(self):
         from src.config import get_settings
         self.settings = get_settings()
@@ -85,15 +93,16 @@ class VolatilityManager:
             h1_atr = self._get_atr_analysis(h1_data, 'H1')
             m30_atr = self._get_atr_analysis(m30_data, 'M30')
             
-            # Weight timeframes (H4 most important for position sizing)
-            weighted_atr = (h4_atr['current'] * 0.5 + 
-                          h1_atr['current'] * 0.3 + 
-                          m30_atr['current'] * 0.2)
-            
+            # Weight timeframes using class constants
+            w = self.TIMEFRAME_WEIGHTS
+            weighted_atr = (h4_atr['current'] * w['H4'] +
+                          h1_atr['current'] * w['H1'] +
+                          m30_atr['current'] * w['M30'])
+
             weighted_percentile = int(
-                h4_atr['percentile'] * 0.5 + 
-                h1_atr['percentile'] * 0.3 + 
-                m30_atr['percentile'] * 0.2
+                h4_atr['percentile'] * w['H4'] +
+                h1_atr['percentile'] * w['H1'] +
+                m30_atr['percentile'] * w['M30']
             )
             
             # Calculate volatility ratio (current vs average)
