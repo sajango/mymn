@@ -69,8 +69,8 @@ class PortfolioRiskManager:
         self.max_positions = 3              # Max concurrent positions
         self.max_correlated_risk = 8.0      # Max 8% with correlations
         
-        # Performance-based adjustments
-        self.win_rate_target = 0.40         # Target 40% win rate
+        # Performance-based adjustments (all percentages use 0-100 scale)
+        self.win_rate_target = 40.0         # Target 40% win rate
         self.profit_factor_target = 1.5     # Target 1.5 profit factor
         self.max_consecutive_losses = 3     # Reduce after 3 losses
         
@@ -360,7 +360,7 @@ class PortfolioRiskManager:
         wins = [t for t in recent_trades if t['profit'] > 0]
         losses = [t for t in recent_trades if t['profit'] <= 0]
         
-        win_rate = len(wins) / len(recent_trades) if recent_trades else 0
+        win_rate = (len(wins) / len(recent_trades) * 100) if recent_trades else 0  # 0-100 scale
         avg_win = np.mean([t['profit'] for t in wins]) if wins else 0
         avg_loss = abs(np.mean([t['profit'] for t in losses])) if losses else 1
         
@@ -374,13 +374,13 @@ class PortfolioRiskManager:
         adjustment_factor = 1.0
         reasons = []
         
-        # Adjust based on win rate
-        if win_rate < 0.30:
+        # Adjust based on win rate (0-100 scale)
+        if win_rate < 30.0:
             adjustment_factor *= 0.7
-            reasons.append(f"Low win rate ({win_rate:.0%})")
-        elif win_rate > 0.50:
+            reasons.append(f"Low win rate ({win_rate:.1f}%)")
+        elif win_rate > 50.0:
             adjustment_factor *= 1.1
-            reasons.append(f"High win rate ({win_rate:.0%})")
+            reasons.append(f"High win rate ({win_rate:.1f}%)")
         
         # Adjust based on profit factor
         if profit_factor < 1.0:

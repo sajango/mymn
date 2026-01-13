@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     )
     mt5_symbol: str = Field(default="XAUUSD", description="Trading symbol")
     risk_percent: float = Field(
-        default=1.5, ge=0.1, le=5.0, description="Risk percentage per trade"
+        default=1.5, ge=0.1, le=3.0, description="Risk percentage per trade (max 3% to ensure 3 positions <= 10% total)"
     )
     max_position_size: float = Field(
         default=0.1, ge=0.01, le=1.0, description="Maximum position size in lots"
