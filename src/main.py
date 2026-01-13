@@ -28,6 +28,7 @@ from src.news_calendar import get_news_calendar
 from src.signal_parser import TradingSignal
 from src.scheduler import (
     create_scheduler,
+    get_event_prune_trigger,
     get_m15_trigger,
     get_observer_trigger,
     get_tp_monitor_trigger,
@@ -773,6 +774,30 @@ class TradingOrchestrator:
             # Observer errors should never block main operation
             logger.debug(f"Observer job failed (non-blocking): {e}")
 
+    async def event_prune_job(self):
+        """Prune old observer events - runs daily at 03:00 UTC.
+
+        Removes events older than observer_persistence_max_age_days.
+        """
+        config = get_settings()
+
+        if not config.observer_persistence_enabled:
+            return
+
+        try:
+            from src.observers.event_persistence import get_event_store
+
+            store = get_event_store()
+            deleted = store.prune_old_events(
+                max_age_days=config.observer_persistence_max_age_days
+            )
+
+            if deleted > 0:
+                logger.info(f"Event prune job: removed {deleted} old events")
+
+        except Exception as e:
+            logger.error(f"Event prune job failed: {e}")
+
     async def weekly_report_job(self):
         """Weekly report job - runs every Sunday at 23:00 UTC.
 
@@ -1077,6 +1102,16 @@ class TradingOrchestrator:
                 replace_existing=True,
             )
             logger.info("Market observer job scheduled (10s interval)")
+
+        # Schedule event prune job (daily 03:00 UTC) - Phase 04 Observer Enhancements
+        if config.observer_persistence_enabled:
+            self.scheduler.add_job(
+                self.event_prune_job,
+                get_event_prune_trigger(),
+                id="event_prune",
+                replace_existing=True,
+            )
+            logger.info("Event prune job scheduled (daily 03:00 UTC)")
 
         # Start scheduler
         self.scheduler.start()

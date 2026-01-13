@@ -90,3 +90,14 @@ def get_observer_trigger() -> IntervalTrigger:
         IntervalTrigger for 10-second intervals
     """
     return IntervalTrigger(seconds=10)
+
+
+def get_event_prune_trigger() -> CronTrigger:
+    """Get cron trigger for event pruning job.
+
+    Triggers daily at 03:00 UTC to clean up old observer events.
+
+    Returns:
+        CronTrigger for daily schedule
+    """
+    return CronTrigger(hour=3, minute=0)

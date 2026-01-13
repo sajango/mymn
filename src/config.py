@@ -332,6 +332,20 @@ class Settings(BaseSettings):
         default=30, ge=5, le=120, description="Time window for event correlation"
     )
 
+    # Event Persistence Settings (Phase 04 - Observer Enhancements)
+    observer_persistence_enabled: bool = Field(
+        default=True, description="Enable SQLite persistence for observer events"
+    )
+    observer_persistence_db_path: str = Field(
+        default="data/observer_events.db", description="Path to observer events database"
+    )
+    observer_persistence_batch_size: int = Field(
+        default=100, ge=10, le=1000, description="Events to buffer before batch insert"
+    )
+    observer_persistence_max_age_days: int = Field(
+        default=7, ge=1, le=90, description="Days to retain events before pruning"
+    )
+
     @property
     def project_root(self) -> Path:
         """Get the project root directory."""

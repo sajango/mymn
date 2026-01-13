@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.observers.base_observer import BaseObserver, ObserverEvent
 from src.observers.event_aggregator import AggregatedEvent, EventAggregator
+from src.observers.event_persistence import get_event_store
 from src.observers.observer_telemetry import (
     HealthChecker,
     LatencyTracer,
@@ -422,6 +423,15 @@ def get_market_observer() -> MarketObserver:
                 dedup_window_seconds=config.observer_dedup_window_seconds,
                 correlation_window_seconds=config.observer_correlation_window_seconds,
             )
+
+        # Enable persistence (Phase 04 - Observer Enhancements)
+        if config.observer_persistence_enabled:
+            store = get_event_store(
+                db_path=config.observer_persistence_db_path,
+                batch_size=config.observer_persistence_batch_size,
+            )
+            _market_observer.subscribe(lambda event: store.store(event))
+            logger.info("Event persistence enabled")
 
         logger.info("MarketObserver initialized with default observers")
 

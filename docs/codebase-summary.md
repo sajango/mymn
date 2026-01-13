@@ -1,8 +1,8 @@
 # MT5 Elliott Wave Trading System - Codebase Summary
 
-**Last Updated**: 2026-01-12
-**Current Phase**: Phase 9 (RiskGuard Key Level Proximity Validation) + Stable Profit Strategy Complete (Phases A-C)
-**Total Repository**: 299,785+ tokens, 1,119,259+ characters, 95+ files (includes dashboard, instructions, tests, Stable Profit Strategy)
+**Last Updated**: 2026-01-13
+**Current Phase**: Phase 04 (Event Persistence) + Phase 9 (RiskGuard Key Level Proximity Validation) + Stable Profit Strategy Complete (Phases A-C)
+**Total Repository**: 310,000+ tokens, 1,150,000+ characters, 97+ files (includes observer persistence, dashboard, instructions, tests)
 
 ## Quick Overview
 
@@ -120,7 +120,43 @@ Configuration (Phase 9 additions):
 - `key_level_proximity_min_pips` (default: 10.0)
 - `key_level_proximity_atr_multiplier` (default: 1.5)
 
-### Layer 6.5: Modular Instruction System (Phase 1-3)
+### Layer 6.5: Observer Event Persistence (Phase 04 - NEW)
+
+**event_persistence.py** - SQLite-based event storage for observer events
+```
+Core Features:
+- Batch inserts for efficiency (configurable batch size, default: 100)
+- Sequence numbers for ordering guarantee
+- Thread-safe operations with RLock
+- Time-based queries and event type filtering
+- Event replay with speed control for backtesting
+- Auto-prune for bounded storage (max age configurable)
+
+Key Classes:
+- StoredEvent: Database record dataclass with conversion to ObserverEvent
+- EventStore: Thread-safe batch storage and query engine
+- EventReplayer: Chronological event replay with speed control
+- get_event_store(): Singleton factory for global access
+
+Key Methods:
+- store(event) → event_id (buffered, auto-flush at batch_size)
+- flush() → Write pending events to database
+- query(start_time, end_time, event_types, limit) → List[StoredEvent]
+- count() → Total event count
+- prune_old_events(max_age_days) → Number deleted
+- replay(start_time, end_time, callback, speed) → Iterator[ObserverEvent]
+- get_time_range() → (min_timestamp, max_timestamp)
+
+Tests: 28 passing tests covering EventStore, EventReplayer, StoredEvent, integration
+```
+
+Configuration (Phase 04 additions):
+- `observer_persistence_enabled` (default: True)
+- `observer_persistence_db_path` (default: data/observer_events.db)
+- `observer_persistence_batch_size` (default: 100)
+- `observer_persistence_max_age_days` (default: 7)
+
+### Layer 6.6: Modular Instruction System (Phase 1-3)
 
 **instruction_builder.py** - Dynamic instruction assembly engine
 ```
@@ -338,6 +374,7 @@ Repeat trail logic
 | trade_executor.py | Execution workflow | test_trade_executor.py (13 tests) |
 | trailing_stop_manager.py | Stop loss management | test_trailing_stop.py (16 tests) |
 | telegram_bot.py | User interface | test_telegram.py |
+| **observers/event_persistence.py** | **Event storage and replay (Phase 04)** | **test_event_persistence.py (28 tests)** |
 
 ### Instruction Modules (src/instructions/ - Phase 1)
 | Directory | Purpose | Files |
@@ -356,7 +393,7 @@ Repeat trail logic
 - `ranging.md` - Range-bound market guidance (ADX <15)
 - `volatile.md` - High volatility guidance (ATR >2x normal)
 
-### Test Coverage (Phase 7 + Stable Profit Strategy Phases A-C)
+### Test Coverage (Phase 7 + Stable Profit Strategy Phases A-C + Phase 04)
 ```
 Core Modules (91-100% coverage):
 - config.py:              91%
@@ -366,11 +403,14 @@ Core Modules (91-100% coverage):
 - session_detector.py:    100%
 - spread_checker.py:      100%
 
-Stable Profit Strategy Modules (Phase A-C - NEW):
+Stable Profit Strategy Modules (Phase A-C):
 - instruction_builder.py:     ✅ 27 tests (InstructionBuilder)
 - calibration_analyzer.py:    ✅ 17 tests (ConfidenceCalibration)
 - backtest_engine.py:         ✅ 33 tests (BacktestEngine)
 - Phase-specific integration: ✅ 41 tests (End-to-end validation)
+
+Observer Modules (Phase 04 - NEW):
+- event_persistence.py:       ✅ 28 tests (EventStore, EventReplayer, StoredEvent)
 
 Trade Execution Modules (84-100%):
 - trade_executor.py:      87%
@@ -383,8 +423,9 @@ Integration & UI (27-45%):
 - telegram_bot.py:        45% (mocked in tests)
 - main.py:                0% (orchestration only)
 
-OVERALL:                  372+ tests passing (100%)
+OVERALL:                  400+ tests passing (100%)
                           91 phase-specific tests (Stable Profit Strategy A-C)
+                          28 observer tests (Phase 04 - Event Persistence)
                           66%+ coverage
                           Execution: <15 seconds
 ```
@@ -681,16 +722,16 @@ if message.chat_id != config.allowed_chat_id:
 
 | Metric | Value |
 |--------|-------|
-| Total Files | 47 |
-| Total Tokens | 122,128 |
-| Source Files | 9 |
-| Test Files | 8 |
-| Test Cases | 45 |
+| Total Files | 49 |
+| Total Tokens | 125,000+ |
+| Source Files | 10+ |
+| Test Files | 10 |
+| Test Cases | 400+ |
 | Test Pass Rate | 100% |
-| Code Coverage | 84-96% |
-| Lines of Implementation | ~1,985 |
+| Code Coverage | 84-97% |
+| Lines of Implementation | ~2,200 |
 | Documentation Files | 12+ |
-| Phases Completed | 5 / 9 |
+| Phases Completed | Phase 04 (Event Persistence) + Phase 9 (Risk Validation) |
 
 ---
 
